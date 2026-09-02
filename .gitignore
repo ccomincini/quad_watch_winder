@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Pacchetti e deliverable, non versionati
+dist/
+
+# Artefatti di compilazione Arduino
+build/
+*.elf
+*.bin
+*.uf2
+*.hex
+
+# Memoria di lavoro locale, non pubblicata
+CLAUDE.md
