@@ -315,7 +315,9 @@ bool eepromLeggiBlocco(uint16_t indirizzo, uint8_t *dati, uint8_t n) {
 uint8_t calcolaChecksum(const Config &c) {
   const uint8_t *p = (const uint8_t *)&c;
   uint8_t somma = 0;
-  for (size_t i = 0; i < sizeof(Config) - 1; i++) somma ^= p[i];
+  // Solo i byte che precedono il campo checksum: restano esclusi il checksum
+  // stesso e il riempimento finale della struttura.
+  for (size_t i = 0; i < offsetof(Config, checksum); i++) somma ^= p[i];
   return somma;
 }
 
@@ -961,6 +963,13 @@ void setup() {
     Serial.println(F("  *** L'RTC segnala che l'oscillatore si e' fermato. ***"));
     Serial.println(F("  *** L'ora non e' attendibile: impostarla con il comando T. ***"));
     Serial.println();
+  }
+
+  // Prima lettura dell'ora gia' qui: senza, nel primo secondo del loop l'ora
+  // risulterebbe non valida e i motori partirebbero per ripiego anche di notte.
+  if (rtcPresente) {
+    oraCacheValida = rtcLeggi(oraCache);
+    ultimaLetturaRtcMs = millis();
   }
 
   ricalcolaPiano();

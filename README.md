@@ -5,10 +5,14 @@ Caricaorologi automatici a quattro posti: la meccanica è il modello 3D
 rifatti da zero attorno a un **Raspberry Pi Pico 2 W** con orologio in tempo
 reale (RTC) DS3231.
 
-Il progetto nasce per due orologi con esigenze diverse ma compatibili, un
-Seiko 5 con calibro automatico bidirezionale e un Breitling Chronomat degli
-anni 80 su base Valjoux 7750, entrambi soddisfatti da **650 giri al giorno
-(TPD, Turns Per Day) in modalità bidirezionale**.
+Il progetto nasce per due orologi: un Seiko 5 con calibro automatico
+bidirezionale e un Breitling Chronomat 81950 su base Valjoux 7750, che invece
+carica in un solo verso. Il valore di serie è **650 giri al giorno (TPD, Turns
+Per Day) in modalità bidirezionale**; per il Valjoux 7750 conviene alzarlo,
+perché in bidirezionale solo metà dei giri lo carica.
+
+Esiste anche una **variante a 2 posti** con meccanica diversa e lo stesso
+firmware: vedi [2_orologi/README.md](2_orologi/README.md).
 
 ![Schema dei collegamenti](doc/schema-elettrico.svg)
 
@@ -273,6 +277,12 @@ Il repository contiene materiale con due licenze diverse.
 modificate: opera di **Karel**, licenza **CC BY-NC 4.0**, attribuzione
 obbligatoria e **uso commerciale non consentito**. Vedi
 [quad-watch-winder-model_files/LICENSE-3D.md](quad-watch-winder-model_files/LICENSE-3D.md).
+
+**Variante a 2 posti** — cartella `2_orologi/`: lo sketch
+`watchwinder_2posti/`, lo schema elettrico e il README sono sotto licenza
+**MIT**; il modello 3D, lo schema e il codice originali di **JayS** e lo sketch
+`watchwinder_nano/` che ne deriva sono sotto licenza **CC BY-NC-SA 4.0**. Il
+dettaglio è in [2_orologi/README.md](2_orologi/README.md).
 
 Chi riutilizza questo repository è tenuto a rispettare entrambe le licenze:
 il firmware è liberamente riutilizzabile anche in ambito commerciale, le parti
