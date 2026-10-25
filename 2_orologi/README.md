@@ -73,7 +73,7 @@ Elettronica, recuperata dal caricatore a 4 posti:
 - modulo RTC DS3231SN con EEPROM AT24C32 e batteria CR2032 **non ricaricabile**
 - alimentatore 5 V 2,5 A, due morsetti Wago, condensatore elettrolitico
   1000 µF 16 V
-- pulsante da 16 mm con LED, a ritenuta, usato come interruttore generale
+- pulsante da 16 mm a ritenuta, senza LED, usato come interruttore generale
 
 Stampa: PLA, oppure PETG con un po' di rifinitura. Il file `.3mf` contiene
 già orientamento e supporti.
@@ -92,8 +92,7 @@ già orientamento e supporti.
 
 Il contatto del pulsante è in serie sul positivo, fra l'alimentatore e il
 Wago +5 V. Dai due Wago partono in parallelo i rami per le due schede ULN2003,
-per il Pico, per il condensatore e per il LED del pulsante, che fa da spia di
-accensione.
+per il Pico e per il condensatore.
 
 Due avvertenze nate dalla messa in funzione:
 
@@ -105,6 +104,13 @@ Due avvertenze nate dalla messa in funzione:
 - **USB e pulsante spento.** Con il cavo USB collegato il Pico porta la
   corrente della porta USB sul Wago +5 V anche a pulsante spento, e da lì ai
   motori. Per usare il monitor seriale tenere il pulsante acceso.
+- **Alimentazione solo da USB.** Il caricatore funziona anche con il solo
+  cavo USB nel Pico: la corrente passa dal diodo fra VBUS e VSYS
+  (PMEG6010ELR, 1 A, dallo schema ufficiale del Pico 2 W) e arriva ai Wago.
+  I due motori insieme assorbono fino a circa 0,6 A e ricevono circa mezzo
+  volt in meno; provato il 25/10/2026, girano senza problemi. Per un uso
+  continuo meglio un alimentatore USB da almeno 1 A che la porta di un
+  computer. In questo caso il pulsante non spegne nulla: si stacca il cavo.
 
 ## Firmware e configurazione
 
