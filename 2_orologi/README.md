@@ -38,7 +38,8 @@ JayS. Per questi file:
 **MIT (Carlo Comincini)** — lo sketch `watchwinder_2posti/`, lo schema
 `schema-elettrico-2-posti.svg` e questo README. Lo sketch per il Pico non
 deriva dal codice di JayS: è il firmware del caricatore a 4 posti con valori
-di partenza diversi, quindi resta sotto la licenza MIT del repository.
+di partenza diversi e una fascia oraria in più per il fine settimana, quindi
+resta sotto la licenza MIT del repository.
 
 ## File
 
@@ -107,20 +108,37 @@ Due avvertenze nate dalla messa in funzione:
 
 ## Firmware e configurazione
 
-Lo sketch è `watchwinder_2posti/watchwinder_2posti.ino`: è lo stesso firmware
+Lo sketch è `watchwinder_2posti/watchwinder_2posti.ino`: deriva dal firmware
 del caricatore a 4 posti (`../watchwinder/`), con questi valori di partenza:
 
 | Parametro | Valore | Comando |
 |-----------|--------|---------|
-| Fascia oraria | 08:00 - 20:00 | `h 8 20` |
+| Fascia oraria dal lunedì al venerdì | 08:00 - 21:00 | `h 8 21 10 21` |
+| Fascia oraria sabato e domenica | 10:00 - 21:00 | (stesso comando) |
 | Giri al giorno | 1600 | `p 1600` |
 | Verso | entrambi, metà e metà | `r 0` |
 | Intervallo fra i passi | 1900 µs | `v 1900` |
 | Posti 3 e 4 | spenti | `e3 0`, `e4 0` |
 
-Il formato della configurazione salvata nella EEPROM del modulo RTC è lo
-stesso del 4 posti: un modulo spostato da una scatola all'altra conserva la
-sua configurazione.
+Rispetto al 4 posti ci sono due differenze:
+
+- **Fascia oraria per il fine settimana.** Il comando `h` accetta quattro
+  numeri: inizio e fine dal lunedì al venerdì, poi inizio e fine il sabato e
+  la domenica. Con due soli numeri (per esempio `h 9 20`) la stessa fascia
+  vale tutti i giorni, e con inizio uguale alla fine (`h 0 0`) il caricatore
+  lavora sempre. Il giorno della settimana viene ricavato dalla data
+  dell'RTC. I giri al giorno restano gli stessi anche nei giorni con la
+  fascia più corta: cambiano i giri di ogni quarto d'ora.
+- **RTC cercato di nuovo.** Se all'accensione il modulo RTC non risponde (è
+  successo dopo il collegamento del cavo USB), il firmware lo cerca ogni 5
+  secondi invece di restare senza ora fino al riavvio successivo.
+
+Per la fascia in più la configurazione salvata nella EEPROM del modulo RTC ha
+un formato diverso da quella del 4 posti: spostando il modulo da una scatola
+all'altra si riparte dai valori di fabbrica.
+
+**Ora legale.** L'RTC non la gestisce: a fine marzo e a fine ottobre va
+rimessa l'ora con il comando `T`, altrimenti le fasce slittano di un'ora.
 
 **Perché 1600 giri in entrambi i versi.** Il Breitling Chronomat 81950 usa il
 calibro Valjoux 7750, che carica in un solo verso e chiede circa 800 giri al
@@ -128,12 +146,15 @@ giorno. In questo caricatore «giroscopico» il verso di rotazione rispetto al
 quadrante non è riconoscibile, quindi si gira in entrambi i versi con i giri
 raddoppiati: almeno metà, circa 800, cadono nel verso utile. Il Seiko 5 carica
 in entrambi i versi e a molla carica il meccanismo slitta senza danni. Ogni
-quarto d'ora i due motori girano insieme per circa 4 minuti e 20 secondi.
+quarto d'ora i due motori girano insieme per circa 4 minuti dal lunedì al
+venerdì e per circa 4 minuti e 45 secondi il sabato e la domenica, quando la
+fascia è più corta.
 
 Comandi utili da monitor seriale (115200 baud, elenco completo con `?`):
 
 - `s` stato completo, `t` ora e temperatura dell'RTC
 - `T aaaa-mm-gg hh:mm:ss` imposta l'ora
+- `h 8 21 10 21` fasce orarie dal lunedì al venerdì e il sabato e la domenica
 - `f` lavora anche fuori fascia, per esempio per caricare un orologio fermo;
   `a` torna al funzionamento normale. Il comando `f` non viene salvato e si
   annulla a ogni riaccensione.

@@ -5,12 +5,16 @@
  *
  *  Autore: Carlo Comincini
  *
- *  Stesso firmware del caricatore a 4 posti (watchwinder/watchwinder.ino),
+ *  Deriva dal firmware del caricatore a 4 posti (watchwinder/watchwinder.ino),
  *  con i valori di fabbrica adatti alla scatola a 2 posti: posti 3 e 4
- *  spenti, 1600 giri al giorno in entrambi i versi, 1900 us fra i passi,
- *  fascia 08:00-20:00.
- *  Il formato della configurazione in EEPROM e' identico, quindi una
- *  configurazione salvata con l'uno resta valida con l'altro.
+ *  spenti, 1600 giri al giorno in entrambi i versi, 1900 us fra i passi.
+ *  In piu' ha una fascia oraria per il sabato e la domenica distinta da
+ *  quella dal lunedi' al venerdi': di fabbrica 08:00-21:00 nei giorni
+ *  feriali e 10:00-21:00 nel fine settimana. Se all'accensione l'RTC non
+ *  risponde, lo cerca di nuovo ogni 5 secondi.
+ *  Per la fascia in piu' il formato della configurazione in EEPROM e'
+ *  diverso da quello del 4 posti (CONFIG_MAGIC distinto): passando da un
+ *  firmware all'altro si riparte dai valori di fabbrica.
  *
  *  Hardware:
  *    - Raspberry Pi Pico 2 W
@@ -47,9 +51,12 @@
 // ============================================================================
 
 // --- Fascia oraria di funzionamento -----------------------------------------
-// Il winder ruota da ORA_INIZIO (inclusa) a ORA_FINE (esclusa).
-#define DEF_ORA_INIZIO      8      // 08:00 -> inizio attivita'
-#define DEF_ORA_FINE       20      // 20:00 -> stop notturno
+// Il winder ruota da ORA_INIZIO (inclusa) a ORA_FINE (esclusa). Il sabato e
+// la domenica valgono le ore _WE. Inizio uguale alla fine = sempre attivo.
+#define DEF_ORA_INIZIO      8      // lunedi'-venerdi': 08:00 -> inizio attivita'
+#define DEF_ORA_FINE       21      // lunedi'-venerdi': 21:00 -> stop notturno
+#define DEF_ORA_INIZIO_WE  10      // sabato e domenica: 10:00
+#define DEF_ORA_FINE_WE    21      // sabato e domenica: 21:00
 
 // --- Rotazione ---------------------------------------------------------------
 // TPD = Turns Per Day, giri completi al giorno richiesti dall'orologio.
@@ -147,12 +154,12 @@ const uint8_t SEQUENZA[8][4] = {
 //  CONFIGURAZIONE PERSISTENTE (salvata nella EEPROM AT24C32)
 // ============================================================================
 
-#define CONFIG_MAGIC   0x57573202UL   // "WW2" + versione
+#define CONFIG_MAGIC   0x57573203UL   // "WW2" + versione
 #define CONFIG_ADDR    0x0000
 
 struct Config {
   uint32_t magic;
-  uint8_t  oraInizio;
+  uint8_t  oraInizio;      // lunedi'-venerdi'
   uint8_t  oraFine;
   uint16_t tpd;
   uint8_t  cicloMinuti;
@@ -163,7 +170,9 @@ struct Config {
   uint8_t  modoVerso;
   uint8_t  attivo[4];
   uint8_t  inverti[4];
-  uint8_t  checksum;
+  uint8_t  oraInizioWe;    // sabato e domenica
+  uint8_t  oraFineWe;
+  uint8_t  checksum;       // la struttura resta di 32 byte
 };
 
 Config cfg;
@@ -210,6 +219,8 @@ long          passiPerCiclo  = 0;    // passi totali per motore in un ciclo
 
 bool rtcPresente   = false;
 bool eepromPresente = false;
+unsigned long ultimaRicercaRtcMs = 0; // ultimo tentativo di trovare l'RTC assente
+bool pianoFineSettimana = false;     // il piano in uso e' quello di sabato e domenica
 bool forzaAttivo   = false;          // comando 'f': ignora la fascia oraria
 bool sospeso       = false;          // comando 'x': tutto fermo
 
@@ -267,7 +278,7 @@ bool rtcScrivi(const DataOra &t) {
   Wire1.write(dec2bcd(t.secondo));
   Wire1.write(dec2bcd(t.minuto));
   Wire1.write(dec2bcd(t.ora));               // bit 6 a 0 -> formato 24 ore
-  Wire1.write(1);                            // giorno settimana fittizio
+  Wire1.write(1);                            // fittizio: si ricava dalla data
   Wire1.write(dec2bcd(t.giorno));
   Wire1.write(dec2bcd(t.mese));              // secolo a 0
   Wire1.write(dec2bcd((uint8_t)(t.anno % 100)));
@@ -297,6 +308,22 @@ float rtcTemperatura() {
   int8_t  parteIntera = (int8_t)Wire1.read();
   uint8_t parteDec    = Wire1.read() >> 6;
   return parteIntera + parteDec * 0.25f;
+}
+
+// Giorno della settimana ricavato dalla data (0 = domenica ... 6 = sabato),
+// metodo di Sakamoto. Il registro del DS3231 non si usa perche' rtcScrivi()
+// non lo imposta.
+uint8_t giornoSettimana(const DataOra &t) {
+  static const uint8_t k[12] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+  if (t.mese < 1 || t.mese > 12) return 1;   // data non valida: lunedi'
+  uint16_t a = t.anno;
+  if (t.mese < 3) a--;
+  return (a + a / 4 - a / 100 + a / 400 + k[t.mese - 1] + t.giorno) % 7;
+}
+
+bool fineSettimana(const DataOra &t) {
+  uint8_t g = giornoSettimana(t);
+  return g == 0 || g == 6;
 }
 
 // ============================================================================
@@ -347,6 +374,8 @@ void configDefault() {
   cfg.attivo[2]   = DEF_ATTIVO_3;  cfg.attivo[3]  = DEF_ATTIVO_4;
   cfg.inverti[0]  = DEF_INVERTI_1; cfg.inverti[1] = DEF_INVERTI_2;
   cfg.inverti[2]  = DEF_INVERTI_3; cfg.inverti[3] = DEF_INVERTI_4;
+  cfg.oraInizioWe = DEF_ORA_INIZIO_WE;
+  cfg.oraFineWe   = DEF_ORA_FINE_WE;
   cfg.checksum    = calcolaChecksum(cfg);
 }
 
@@ -402,11 +431,17 @@ long passiPerGiroOrologio() {
 }
 
 // Calcola quanti passi deve fare ogni motore in un ciclo e come dividerli
-// fra le due direzioni.
+// fra le due direzioni. I giri al giorno restano gli stessi anche quando la
+// fascia di sabato e domenica e' piu' corta: cambia la quota per ciclo.
+// Senza un'ora valida dall'RTC si usa la fascia dei giorni feriali.
 void ricalcolaPiano() {
   cicloDurataMs = (unsigned long)cfg.cicloMinuti * 60UL * 1000UL;
 
-  int oreAttive = (int)cfg.oraFine - (int)cfg.oraInizio;
+  pianoFineSettimana = oraCacheValida && fineSettimana(oraCache);
+  uint8_t ini = pianoFineSettimana ? cfg.oraInizioWe : cfg.oraInizio;
+  uint8_t fin = pianoFineSettimana ? cfg.oraFineWe   : cfg.oraFine;
+
+  int oreAttive = (int)fin - (int)ini;
   if (oreAttive <= 0) oreAttive += 24;
 
   float cicliAlGiorno = (oreAttive * 60.0f) / (float)cfg.cicloMinuti;
@@ -524,11 +559,14 @@ void aggiornaWinder(uint8_t m) {
 // ============================================================================
 
 bool fasciaAttiva(const DataOra &t) {
-  if (cfg.oraInizio == cfg.oraFine) return true;      // sempre attivo
-  if (cfg.oraInizio < cfg.oraFine)
-    return (t.ora >= cfg.oraInizio && t.ora < cfg.oraFine);
-  // fascia che scavalca la mezzanotte
-  return (t.ora >= cfg.oraInizio || t.ora < cfg.oraFine);
+  bool we     = fineSettimana(t);
+  uint8_t ini = we ? cfg.oraInizioWe : cfg.oraInizio;
+  uint8_t fin = we ? cfg.oraFineWe   : cfg.oraFine;
+  if (ini == fin) return true;                         // sempre attivo
+  if (ini < fin)
+    return (t.ora >= ini && t.ora < fin);
+  // fascia che scavalca la mezzanotte: conta il giorno di calendario in corso
+  return (t.ora >= ini || t.ora < fin);
 }
 
 // ============================================================================
@@ -541,12 +579,21 @@ void stampaDueCifre(uint8_t v) {
 }
 
 void stampaOra(const DataOra &t) {
+  static const char *const NOMI_GIORNO[7] = { "dom", "lun", "mar", "mer", "gio", "ven", "sab" };
+  Serial.print(NOMI_GIORNO[giornoSettimana(t)]); Serial.print(' ');
   stampaDueCifre(t.giorno); Serial.print('/');
   stampaDueCifre(t.mese);   Serial.print('/');
   Serial.print(t.anno);     Serial.print(' ');
   stampaDueCifre(t.ora);    Serial.print(':');
   stampaDueCifre(t.minuto); Serial.print(':');
   stampaDueCifre(t.secondo);
+}
+
+void stampaFascia(uint8_t ini, uint8_t fin) {
+  stampaDueCifre(ini); Serial.print(F(":00 - "));
+  stampaDueCifre(fin); Serial.print(F(":00"));
+  if (ini == fin) Serial.print(F("  (sempre attivo)"));
+  Serial.println();
 }
 
 const char *nomeStato(StatoWinder s) {
@@ -575,7 +622,8 @@ void stampaAiuto() {
   Serial.println(F("  f              forza attivita' ignorando la fascia oraria"));
   Serial.println();
   Serial.println(F("  CONFIGURAZIONE (seguita da 'w' per salvare in EEPROM)"));
-  Serial.println(F("  h <ini> <fin>  fascia oraria, es. 'h 9 20'"));
+  Serial.println(F("  h <ini> <fin>  stessa fascia oraria tutti i giorni, es. 'h 9 20'"));
+  Serial.println(F("  h <ini> <fin> <ini> <fin>   lun-ven e sab-dom, es. 'h 8 21 10 21'"));
   Serial.println(F("  p <tpd>        giri al giorno, es. 'p 650'"));
   Serial.println(F("  c <minuti>     durata del ciclo, es. 'c 15'"));
   Serial.println(F("  o <secondi>    sfalsamento fra le partenze, es. 'o 5' (0=uno per volta)"));
@@ -600,9 +648,8 @@ void stampaStato() {
   if (ok) { stampaOra(t); Serial.print(F("   ")); Serial.print(rtcTemperatura(), 2); Serial.println(F(" C")); }
   else      Serial.println(F("NON DISPONIBILE"));
 
-  Serial.print(F("Fascia oraria ... "));
-  stampaDueCifre(cfg.oraInizio); Serial.print(F(":00 - "));
-  stampaDueCifre(cfg.oraFine);   Serial.println(F(":00"));
+  Serial.print(F("Fascia lun-ven .. ")); stampaFascia(cfg.oraInizio, cfg.oraFine);
+  Serial.print(F("Fascia sab-dom .. ")); stampaFascia(cfg.oraInizioWe, cfg.oraFineWe);
 
   Serial.print(F("Modalita' ....... "));
   if (sospeso)          Serial.println(F("SOSPESA (comando x)"));
@@ -614,7 +661,8 @@ void stampaStato() {
   Serial.print(F("Ciclo ........... ")); Serial.print(cfg.cicloMinuti); Serial.println(F(" minuti"));
 
   float giriCiclo = (float)passiPerCiclo / (float)passiPerGiroOrologio();
-  Serial.print(F("Giri per ciclo .. ")); Serial.println(giriCiclo, 2);
+  Serial.print(F("Giri per ciclo .. ")); Serial.print(giriCiclo, 2);
+  Serial.println(pianoFineSettimana ? F("  (fascia sab-dom)") : F("  (fascia lun-ven)"));
   Serial.print(F("Passi per ciclo . ")); Serial.println(passiPerCiclo);
   Serial.print(F("Velocita' ....... ")); Serial.print(cfg.passoUs);
   Serial.print(F(" us/passo  ("));
@@ -789,14 +837,22 @@ void eseguiComando(String cmd) {
       break;
 
     case 'h': {
-      int ini, fin;
-      if (sscanf(resto.c_str(), "%d %d", &ini, &fin) == 2 &&
-          ini >= 0 && ini <= 23 && fin >= 0 && fin <= 23) {
-        cfg.oraInizio = ini; cfg.oraFine = fin;
+      int v[4];
+      int n = sscanf(resto.c_str(), "%d %d %d %d", &v[0], &v[1], &v[2], &v[3]);
+      bool ok = (n == 2 || n == 4);
+      for (int i = 0; ok && i < n; i++) if (v[i] < 0 || v[i] > 23) ok = false;
+      if (ok) {
+        // Con due soli valori la stessa fascia vale per tutti i giorni.
+        if (n == 2) { v[2] = v[0]; v[3] = v[1]; }
+        cfg.oraInizio   = v[0]; cfg.oraFine   = v[1];
+        cfg.oraInizioWe = v[2]; cfg.oraFineWe = v[3];
         ricalcolaPiano();
-        Serial.print(F("Fascia oraria: ")); stampaDueCifre(cfg.oraInizio);
-        Serial.print(F(":00 - ")); stampaDueCifre(cfg.oraFine); Serial.println(F(":00"));
-      } else Serial.println(F("Uso: h <ora_inizio> <ora_fine>   esempio: h 9 20"));
+        Serial.print(F("Fascia lun-ven: ")); stampaFascia(cfg.oraInizio, cfg.oraFine);
+        Serial.print(F("Fascia sab-dom: ")); stampaFascia(cfg.oraInizioWe, cfg.oraFineWe);
+      } else {
+        Serial.println(F("Uso: h <ora_inizio> <ora_fine>   esempio: h 9 20"));
+        Serial.println(F("     h <ini_lun_ven> <fin_lun_ven> <ini_sab_dom> <fin_sab_dom>   esempio: h 8 21 10 21"));
+      }
       break;
     }
 
@@ -1012,6 +1068,21 @@ void loop() {
     return;
   }
 
+  // Se all'accensione l'RTC non ha risposto (contatto incerto, bus bloccato
+  // dopo il collegamento USB) lo si cerca di nuovo ogni 5 secondi, invece di
+  // restare per sempre nel ripiego "sempre attivo".
+  if (!rtcPresente && (millis() - ultimaRicercaRtcMs) >= 5000UL) {
+    ultimaRicercaRtcMs = millis();
+    Wire1.beginTransmission(ADDR_DS3231);
+    rtcPresente = (Wire1.endTransmission() == 0);
+    if (rtcPresente) {
+      Serial.println(F("RTC DS3231 (0x68) trovato."));
+      if (rtcOrologioFermo())
+        Serial.println(F("  *** L'oscillatore si e' fermato: impostare l'ora con il comando T. ***"));
+      ultimaLetturaRtcMs = millis() - 1000UL;   // lettura dell'ora subito
+    }
+  }
+
   // Stato della fascia oraria: l'RTC viene interrogato una volta al secondo
   // e il risultato tenuto in cache, per non rubare tempo al passo dei motori.
   if (rtcPresente && (millis() - ultimaLetturaRtcMs) >= 1000UL) {
@@ -1019,6 +1090,9 @@ void loop() {
     oraCacheValida = rtcLeggi(oraCache);
   }
   bool oraValida = oraCacheValida;
+  // A mezzanotte fra venerdi' e sabato e fra domenica e lunedi' cambia la
+  // fascia, e con essa la quota di giri di ogni ciclo.
+  if (oraValida && fineSettimana(oraCache) != pianoFineSettimana) ricalcolaPiano();
   // Se l'RTC non risponde, per prudenza si continua a caricare gli orologi.
   bool attivo = forzaAttivo || !oraValida || fasciaAttiva(oraCache);
 
