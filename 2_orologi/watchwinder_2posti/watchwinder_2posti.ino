@@ -12,6 +12,12 @@
  *  quella dal lunedi' al venerdi': di fabbrica 08:00-21:00 nei giorni
  *  feriali e 10:00-21:00 nel fine settimana. Se all'accensione l'RTC non
  *  risponde, lo cerca di nuovo ogni 5 secondi.
+ *  L'ora si sincronizza da internet (NTP) via wifi alla prima occasione dopo
+ *  l'accensione e poi ogni 12 ore, sempre a motori fermi. Il DS3231 tiene
+ *  l'ora UTC e il firmware la converte in ora italiana, con il passaggio
+ *  automatico fra ora solare e ora legale, che funziona anche senza rete.
+ *  Nome e password della rete si impostano dal monitor seriale (comando 'n')
+ *  e restano solo nella EEPROM del modulo RTC, mai nel codice.
  *  Per la fascia in piu' il formato della configurazione in EEPROM e'
  *  diverso da quello del 4 posti (CONFIG_MAGIC distinto): passando da un
  *  firmware all'altro si riparte dai valori di fabbrica.
@@ -45,6 +51,8 @@
  */
 
 #include <Wire.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
 
 // ============================================================================
 //  CONFIGURAZIONE - valori di default, modificabili anche da monitor seriale
@@ -114,6 +122,13 @@
 #define DEF_ATTIVO_3     false
 #define DEF_ATTIVO_4     false
 
+// --- Ora da internet ---------------------------------------------------------
+#define NTP_SERVER        "pool.ntp.org"
+#define NTP_PORTA_LOCALE   2390
+#define NTP_INTERVALLO_H     12    // ore fra due sincronizzazioni riuscite
+#define NTP_RIPROVA_MIN      15    // minuti prima di riprovare dopo un errore
+#define WIFI_ATTESA_MS     8000    // WiFi.begin() attende al massimo il doppio
+
 // ============================================================================
 //  PIN
 // ============================================================================
@@ -177,6 +192,21 @@ struct Config {
 
 Config cfg;
 
+// Rete wifi, in un blocco separato della EEPROM: si imposta con il comando
+// 'n' e non compare mai nel codice, che e' pubblico.
+#define WIFI_MAGIC     0x57574901UL
+#define WIFI_ADDR      0x0100
+
+struct WifiCfg {
+  uint32_t magic;
+  char     ssid[33];       // al massimo 32 caratteri
+  char     password[64];   // al massimo 63 caratteri (WPA2)
+  uint8_t  checksum;
+};
+
+WifiCfg wifiCfg;
+bool    wifiCfgValida = false;
+
 // ============================================================================
 //  STATO DEI MOTORI
 // ============================================================================
@@ -221,6 +251,13 @@ bool rtcPresente   = false;
 bool eepromPresente = false;
 unsigned long ultimaRicercaRtcMs = 0; // ultimo tentativo di trovare l'RTC assente
 bool pianoFineSettimana = false;     // il piano in uso e' quello di sabato e domenica
+
+unsigned long prossimaSyncMs = 0;    // millis() del prossimo tentativo NTP
+unsigned long ultimoTentativoMs = 0; // millis() dell'ultimo tentativo NTP
+bool          avvisoRtcAzzerato = false;
+bool          syncFatta    = false;  // almeno una sincronizzazione riuscita
+bool          syncRiuscita = false;  // esito dell'ultimo tentativo
+DataOra       oraUltimaSync;         // ora italiana dell'ultima riuscita
 bool forzaAttivo   = false;          // comando 'f': ignora la fascia oraria
 bool sospeso       = false;          // comando 'x': tutto fermo
 
@@ -326,6 +363,78 @@ bool fineSettimana(const DataOra &t) {
   return g == 0 || g == 6;
 }
 
+// Secondi dal 1/1/1970 per una data e viceversa (algoritmi di H. Hinnant).
+uint32_t secondiDaData(const DataOra &t) {
+  int32_t  a   = (int32_t)t.anno - (t.mese <= 2 ? 1 : 0);
+  int32_t  era = a / 400;
+  uint32_t aoe = (uint32_t)(a - era * 400);                     // anno dell'era
+  uint32_t gda = (153U * (t.mese > 2 ? t.mese - 3U : t.mese + 9U) + 2U) / 5U
+                 + t.giorno - 1U;                               // giorno da marzo
+  uint32_t gde = aoe * 365U + aoe / 4U - aoe / 100U + gda;       // giorno dell'era
+  uint32_t giorni = (uint32_t)(era * 146097 + (int32_t)gde - 719468);
+  return giorni * 86400UL + t.ora * 3600UL + t.minuto * 60UL + t.secondo;
+}
+
+void dataDaSecondi(uint32_t s, DataOra &t) {
+  uint32_t resto = s % 86400UL;
+  t.ora     = resto / 3600UL;
+  t.minuto  = (resto / 60UL) % 60UL;
+  t.secondo = resto % 60UL;
+  uint32_t z   = s / 86400UL + 719468UL;
+  uint32_t era = z / 146097UL;
+  uint32_t gde = z - era * 146097UL;
+  uint32_t aoe = (gde - gde / 1460UL + gde / 36524UL - gde / 146096UL) / 365UL;
+  uint32_t gda = gde - (365UL * aoe + aoe / 4UL - aoe / 100UL);
+  uint32_t mp  = (5UL * gda + 2UL) / 153UL;
+  t.giorno = gda - (153UL * mp + 2UL) / 5UL + 1UL;
+  t.mese   = mp < 10UL ? mp + 3UL : mp - 9UL;
+  t.anno   = aoe + era * 400UL + (t.mese <= 2 ? 1 : 0);
+}
+
+// Ora italiana: UTC+1, UTC+2 con l'ora legale europea, che va dall'ultima
+// domenica di marzo all'ultima domenica di ottobre con il cambio alle 01:00 UTC.
+bool oraLegale(const DataOra &utc) {
+  if (utc.mese < 3 || utc.mese > 10) return false;
+  if (utc.mese > 3 && utc.mese < 10) return true;
+  DataOra fineMese = utc;
+  fineMese.giorno = 31;                      // marzo e ottobre hanno 31 giorni
+  uint8_t domenica = 31 - giornoSettimana(fineMese);
+  if (utc.mese == 3)
+    return utc.giorno > domenica || (utc.giorno == domenica && utc.ora >= 1);
+  return utc.giorno < domenica || (utc.giorno == domenica && utc.ora < 1);
+}
+
+void utcInLocale(const DataOra &utc, DataOra &locale) {
+  dataDaSecondi(secondiDaData(utc) + (oraLegale(utc) ? 7200UL : 3600UL), locale);
+}
+
+// Nell'ora che a fine ottobre si ripete vale l'ora solare.
+void localeInUtc(const DataOra &locale, DataOra &utc) {
+  uint32_t s = secondiDaData(locale) - 3600UL;
+  dataDaSecondi(s, utc);
+  if (oraLegale(utc)) dataDaSecondi(s - 3600UL, utc);
+}
+
+// Il DS3231 tiene l'ora UTC; il resto del firmware ragiona in ora italiana.
+bool leggiOra(DataOra &locale) {
+  DataOra utc;
+  if (!rtcLeggi(utc)) return false;
+  utcInLocale(utc, locale);
+  return true;
+}
+
+bool scriviOra(const DataOra &locale) {
+  DataOra utc;
+  localeInUtc(locale, utc);
+  return rtcScrivi(utc);
+}
+
+// Un RTC azzerato (contatto incerto sui fili del modulo) riparte dal
+// 1/1/2000: un'ora precedente al 2026 non e' attendibile.
+bool oraAttendibile() {
+  return oraCacheValida && oraCache.anno >= 2026;
+}
+
 // ============================================================================
 //  EEPROM AT24C32
 // ============================================================================
@@ -350,13 +459,37 @@ bool eepromLeggiBlocco(uint16_t indirizzo, uint8_t *dati, uint8_t n) {
   return true;
 }
 
-uint8_t calcolaChecksum(const Config &c) {
-  const uint8_t *p = (const uint8_t *)&c;
+bool eepromLeggi(uint16_t indirizzo, void *dati, uint16_t n) {
+  uint8_t *p = (uint8_t *)dati;
+  for (uint16_t off = 0; off < n; off += 24) {
+    uint8_t blocco = (n - off > 24) ? 24 : (uint8_t)(n - off);
+    if (!eepromLeggiBlocco(indirizzo + off, p + off, blocco)) return false;
+  }
+  return true;
+}
+
+// Blocchi da 16 byte: partendo da un indirizzo multiplo di 16 non scavalcano
+// mai le pagine da 32 byte della AT24C32.
+bool eepromScrivi(uint16_t indirizzo, const void *dati, uint16_t n) {
+  const uint8_t *p = (const uint8_t *)dati;
+  for (uint16_t off = 0; off < n; off += 16) {
+    uint8_t blocco = (n - off > 16) ? 16 : (uint8_t)(n - off);
+    if (!eepromScriviBlocco(indirizzo + off, p + off, blocco)) return false;
+  }
+  return true;
+}
+
+uint8_t sommaXor(const void *dati, size_t n) {
+  const uint8_t *p = (const uint8_t *)dati;
   uint8_t somma = 0;
-  // Solo i byte che precedono il campo checksum: restano esclusi il checksum
-  // stesso e il riempimento finale della struttura.
-  for (size_t i = 0; i < offsetof(Config, checksum); i++) somma ^= p[i];
+  for (size_t i = 0; i < n; i++) somma ^= p[i];
   return somma;
+}
+
+// Solo i byte che precedono il campo checksum: restano esclusi il checksum
+// stesso e il riempimento finale della struttura.
+uint8_t calcolaChecksum(const Config &c) {
+  return sommaXor(&c, offsetof(Config, checksum));
 }
 
 void configDefault() {
@@ -381,12 +514,7 @@ void configDefault() {
 
 bool configCarica() {
   Config tmp;
-  uint8_t *p = (uint8_t *)&tmp;
-  uint16_t n = sizeof(Config);
-  for (uint16_t off = 0; off < n; off += 24) {
-    uint8_t blocco = (n - off > 24) ? 24 : (uint8_t)(n - off);
-    if (!eepromLeggiBlocco(CONFIG_ADDR + off, p + off, blocco)) return false;
-  }
+  if (!eepromLeggi(CONFIG_ADDR, &tmp, sizeof(Config))) return false;
   if (tmp.magic != CONFIG_MAGIC) return false;
   if (tmp.checksum != calcolaChecksum(tmp)) return false;
   cfg = tmp;
@@ -395,13 +523,23 @@ bool configCarica() {
 
 bool configSalva() {
   cfg.checksum = calcolaChecksum(cfg);
-  const uint8_t *p = (const uint8_t *)&cfg;
-  uint16_t n = sizeof(Config);
-  for (uint16_t off = 0; off < n; off += 16) {   // AT24C32: pagine da 32 byte
-    uint8_t blocco = (n - off > 16) ? 16 : (uint8_t)(n - off);
-    if (!eepromScriviBlocco(CONFIG_ADDR + off, p + off, blocco)) return false;
-  }
+  return eepromScrivi(CONFIG_ADDR, &cfg, sizeof(Config));
+}
+
+bool wifiCarica() {
+  WifiCfg tmp;
+  if (!eepromLeggi(WIFI_ADDR, &tmp, sizeof(WifiCfg))) return false;
+  if (tmp.magic != WIFI_MAGIC) return false;
+  if (tmp.checksum != sommaXor(&tmp, offsetof(WifiCfg, checksum))) return false;
+  tmp.ssid[sizeof(tmp.ssid) - 1] = 0;
+  tmp.password[sizeof(tmp.password) - 1] = 0;
+  wifiCfg = tmp;
   return true;
+}
+
+bool wifiSalva() {
+  wifiCfg.checksum = sommaXor(&wifiCfg, offsetof(WifiCfg, checksum));
+  return eepromScrivi(WIFI_ADDR, &wifiCfg, sizeof(WifiCfg));
 }
 
 // ============================================================================
@@ -437,7 +575,7 @@ long passiPerGiroOrologio() {
 void ricalcolaPiano() {
   cicloDurataMs = (unsigned long)cfg.cicloMinuti * 60UL * 1000UL;
 
-  pianoFineSettimana = oraCacheValida && fineSettimana(oraCache);
+  pianoFineSettimana = oraAttendibile() && fineSettimana(oraCache);
   uint8_t ini = pianoFineSettimana ? cfg.oraInizioWe : cfg.oraInizio;
   uint8_t fin = pianoFineSettimana ? cfg.oraFineWe   : cfg.oraFine;
 
@@ -499,6 +637,11 @@ void fermaTutti() {
     winder[m].test  = false;
     bobineSpente(m);
   }
+}
+
+bool tuttiFermi() {
+  for (uint8_t m = 0; m < 4; m++) if (winder[m].stato != WS_FERMO) return false;
+  return true;
 }
 
 // Aggiornamento non bloccante di un singolo motore.
@@ -612,8 +755,11 @@ void stampaAiuto() {
   Serial.println(F("  ?              questo elenco"));
   Serial.println(F("  s              stato completo del sistema"));
   Serial.println(F("  t              legge data/ora e temperatura dall'RTC"));
-  Serial.println(F("  T aaaa-mm-gg hh:mm:ss   imposta l'orologio RTC"));
+  Serial.println(F("  T aaaa-mm-gg hh:mm:ss   imposta l'orologio RTC (ora italiana)"));
   Serial.println(F("  Tc             imposta l'RTC all'ora di compilazione"));
+  Serial.println(F("  n              sincronizza subito l'ora da internet"));
+  Serial.println(F("  n <rete> <password>   salva la rete wifi in EEPROM e sincronizza"));
+  Serial.println(F("  n -            cancella la rete wifi salvata"));
   Serial.println();
   Serial.println(F("  m1..m4         test: un giro orario + un giro antiorario"));
   Serial.println(F("  d1..d4         test verso: 3 giri solo orari"));
@@ -640,7 +786,7 @@ void stampaAiuto() {
 
 void stampaStato() {
   DataOra t;
-  bool ok = rtcPresente && rtcLeggi(t);
+  bool ok = rtcPresente && leggiOra(t);
 
   Serial.println();
   Serial.println(F("------------- STATO WATCH WINDER -------------"));
@@ -648,13 +794,24 @@ void stampaStato() {
   if (ok) { stampaOra(t); Serial.print(F("   ")); Serial.print(rtcTemperatura(), 2); Serial.println(F(" C")); }
   else      Serial.println(F("NON DISPONIBILE"));
 
+  Serial.print(F("Ora da internet . "));
+  if (!wifiCfgValida) Serial.println(F("rete wifi non impostata (comando n)"));
+  else {
+    Serial.print(F("rete ")); Serial.print(wifiCfg.ssid);
+    if (syncFatta) { Serial.print(F(", sincronizzata ")); stampaOra(oraUltimaSync); }
+    else             Serial.print(F(", nessuna sincronizzazione riuscita"));
+    if (syncFatta && !syncRiuscita) Serial.print(F("  (ultimo tentativo fallito)"));
+    Serial.println();
+  }
+
   Serial.print(F("Fascia lun-ven .. ")); stampaFascia(cfg.oraInizio, cfg.oraFine);
   Serial.print(F("Fascia sab-dom .. ")); stampaFascia(cfg.oraInizioWe, cfg.oraFineWe);
 
   Serial.print(F("Modalita' ....... "));
   if (sospeso)          Serial.println(F("SOSPESA (comando x)"));
   else if (forzaAttivo) Serial.println(F("FORZATA ATTIVA (comando f)"));
-  else if (ok)          Serial.println(fasciaAttiva(t) ? F("ATTIVA (giorno)") : F("RIPOSO (notte)"));
+  else if (ok && t.anno >= 2026) Serial.println(fasciaAttiva(t) ? F("ATTIVA (giorno)") : F("RIPOSO (notte)"));
+  else if (ok)          Serial.println(F("ATTIVA (RTC azzerato, ripiego)"));
   else                  Serial.println(F("ATTIVA (RTC assente, ripiego)"));
 
   Serial.print(F("TPD richiesti ... ")); Serial.println(cfg.tpd);
@@ -716,6 +873,88 @@ void stampaStato() {
 }
 
 // ============================================================================
+//  ORA DA INTERNET (NTP via wifi)
+// ============================================================================
+
+// Chiede l'ora a un server NTP: secondi dal 1/1/1970, UTC.
+bool richiestaNtp(uint32_t &epoch) {
+  IPAddress ip;
+  if (!WiFi.hostByName(NTP_SERVER, ip)) return false;
+  WiFiUDP udp;
+  if (!udp.begin(NTP_PORTA_LOCALE)) return false;
+  uint8_t pacchetto[48] = { 0 };
+  pacchetto[0] = 0x1B;                       // versione 3, modo client
+  udp.beginPacket(ip, 123);
+  udp.write(pacchetto, sizeof(pacchetto));
+  udp.endPacket();
+
+  bool ok = false;
+  unsigned long inizio = millis();
+  while (millis() - inizio < 3000UL) {
+    if (udp.parsePacket() >= 48) {
+      udp.read(pacchetto, sizeof(pacchetto));
+      // Campo "transmit timestamp": secondi dal 1/1/1900 nei byte 40-43
+      uint32_t dal1900 = ((uint32_t)pacchetto[40] << 24) | ((uint32_t)pacchetto[41] << 16) |
+                         ((uint32_t)pacchetto[42] << 8)  |  (uint32_t)pacchetto[43];
+      epoch = dal1900 - 2208988800UL;
+      if (pacchetto[44] & 0x80) epoch++;     // arrotonda la frazione di secondo
+      ok = epoch > 1767225600UL;             // scarta risposte vuote (prima del 2026)
+      break;
+    }
+    delay(10);
+  }
+  udp.stop();
+  return ok;
+}
+
+// Collega il wifi, chiede l'ora, la scrive nel DS3231 e scollega. Blocca il
+// programma per qualche secondo: il loop la chiama solo a motori fermi.
+bool sincronizzaOra() {
+  Serial.print(F("[NTP] Collegamento alla rete ")); Serial.print(wifiCfg.ssid); Serial.println(F("..."));
+  WiFi.setTimeout(WIFI_ATTESA_MS);
+  WiFi.setHostname("watchwinder");
+  int stato = wifiCfg.password[0] ? WiFi.begin(wifiCfg.ssid, wifiCfg.password)
+                                  : WiFi.begin(wifiCfg.ssid);
+  bool ok = false;
+  uint32_t epoch = 0;
+  if (stato != WL_CONNECTED) {
+    Serial.println(F("[NTP] Rete non raggiungibile o password errata."));
+  } else if (!richiestaNtp(epoch)) {
+    Serial.println(F("[NTP] Nessuna risposta dal server dell'ora."));
+  } else if (!rtcPresente) {
+    Serial.println(F("[NTP] Ora ricevuta, ma l'RTC non e' disponibile."));
+  } else {
+    DataOra prima, utc;
+    bool primaOk = rtcLeggi(prima);
+    dataDaSecondi(epoch, utc);
+    if (!rtcScrivi(utc)) {
+      Serial.println(F("[NTP] Scrittura dell'ora nell'RTC fallita."));
+    } else {
+      ok = true;
+      utcInLocale(utc, oraUltimaSync);
+      oraCache = oraUltimaSync;
+      oraCacheValida = true;
+      ultimaLetturaRtcMs = millis();
+      Serial.print(F("[NTP] Ora sincronizzata: ")); stampaOra(oraUltimaSync);
+      if (primaOk) {
+        Serial.print(F("   (RTC corretto di "));
+        Serial.print((long)(epoch - secondiDaData(prima)));
+        Serial.print(F(" s)"));
+      }
+      Serial.println();
+    }
+  }
+  WiFi.disconnect();
+
+  ultimoTentativoMs = millis();
+  syncRiuscita = ok;
+  if (ok) syncFatta = true;
+  prossimaSyncMs = millis() + (ok ? NTP_INTERVALLO_H * 3600000UL : NTP_RIPROVA_MIN * 60000UL);
+  statoLed = -1;                             // il LED passa dallo stesso chip: riscriverlo
+  return ok;
+}
+
+// ============================================================================
 //  COMANDI DA MONITOR SERIALE
 // ============================================================================
 
@@ -750,9 +989,11 @@ void eseguiComando(String cmd) {
       break;
 
     case 't': {
-      DataOra t;
-      if (rtcPresente && rtcLeggi(t)) {
+      DataOra utc, t;
+      if (rtcPresente && rtcLeggi(utc)) {
+        utcInLocale(utc, t);
         Serial.print(F("RTC: ")); stampaOra(t);
+        Serial.print(oraLegale(utc) ? F(" ora legale") : F(" ora solare"));
         Serial.print(F("   temperatura ")); Serial.print(rtcTemperatura(), 2);
         Serial.println(F(" C"));
         if (rtcOrologioFermo())
@@ -778,7 +1019,7 @@ void eseguiComando(String cmd) {
         t.ora    = atoi(mt);
         t.minuto = atoi(mt + 3);
         t.secondo= atoi(mt + 6);
-        if (rtcScrivi(t)) { Serial.print(F("RTC impostato a: ")); stampaOra(t); Serial.println(); }
+        if (scriviOra(t)) { Serial.print(F("RTC impostato a: ")); stampaOra(t); Serial.println(); }
         else                Serial.println(F("Scrittura RTC fallita."));
         break;
       }
@@ -795,7 +1036,7 @@ void eseguiComando(String cmd) {
         Serial.println(F("Valori di data/ora fuori intervallo."));
         break;
       }
-      if (rtcScrivi(t)) { Serial.print(F("RTC impostato a: ")); stampaOra(t); Serial.println(); }
+      if (scriviOra(t)) { Serial.print(F("RTC impostato a: ")); stampaOra(t); Serial.println(); }
       else                Serial.println(F("Scrittura RTC fallita."));
       break;
     }
@@ -935,6 +1176,40 @@ void eseguiComando(String cmd) {
       break;
     }
 
+    case 'n': {
+      if (resto == "-") {
+        memset(&wifiCfg, 0, sizeof(wifiCfg));
+        wifiCfgValida = false;
+        if (eepromPresente) wifiSalva();
+        Serial.println(F("Rete wifi cancellata dalla EEPROM."));
+        break;
+      }
+      if (resto.length() > 0) {
+        // Nome della rete fino al primo spazio, poi la password, che non
+        // viene mai ristampata.
+        int spazio  = resto.indexOf(' ');
+        String rete = (spazio < 0) ? resto : resto.substring(0, spazio);
+        String pw   = (spazio < 0) ? String("") : resto.substring(spazio + 1);
+        if (rete.length() > 32 || pw.length() > 63) {
+          Serial.println(F("Nome della rete al massimo 32 caratteri, password al massimo 63."));
+          break;
+        }
+        if (!eepromPresente) { Serial.println(F("EEPROM non rilevata: impossibile salvare.")); break; }
+        memset(&wifiCfg, 0, sizeof(wifiCfg));
+        wifiCfg.magic = WIFI_MAGIC;
+        strncpy(wifiCfg.ssid, rete.c_str(), sizeof(wifiCfg.ssid) - 1);
+        strncpy(wifiCfg.password, pw.c_str(), sizeof(wifiCfg.password) - 1);
+        wifiCfgValida = wifiSalva();
+        if (!wifiCfgValida) { Serial.println(F("Salvataggio della rete wifi fallito.")); break; }
+        Serial.print(F("Rete wifi salvata in EEPROM: ")); Serial.println(wifiCfg.ssid);
+      }
+      if (!wifiCfgValida) { Serial.println(F("Rete wifi non impostata. Uso: n <rete> <password>")); break; }
+      // Sincronizzazione immediata: un motore in movimento resta fermo per
+      // qualche secondo e poi riprende.
+      sincronizzaOra();
+      break;
+    }
+
     case 'w':
       if (!eepromPresente) { Serial.println(F("EEPROM non rilevata: impossibile salvare.")); break; }
       Serial.println(configSalva() ? F("Configurazione salvata in EEPROM.")
@@ -962,7 +1237,7 @@ void leggiSeriale() {
         eseguiComando(bufferSeriale);
         bufferSeriale = "";
       }
-    } else if (bufferSeriale.length() < 60) {
+    } else if (bufferSeriale.length() < 120) {   // spazio per 'n <rete> <password>'
       bufferSeriale += ch;
     }
   }
@@ -1025,6 +1300,11 @@ void setup() {
     Serial.println(F("Configurazione di fabbrica in uso."));
   }
 
+  wifiCfgValida = eepromPresente && wifiCarica();
+  Serial.print(F("Rete wifi ............ "));
+  if (wifiCfgValida) Serial.println(wifiCfg.ssid);
+  else               Serial.println(F("non impostata (comando n)"));
+
   if (rtcPresente && rtcOrologioFermo()) {
     Serial.println();
     Serial.println(F("  *** L'RTC segnala che l'oscillatore si e' fermato. ***"));
@@ -1035,7 +1315,7 @@ void setup() {
   // Prima lettura dell'ora gia' qui: senza, nel primo secondo del loop l'ora
   // risulterebbe non valida e i motori partirebbero per ripiego anche di notte.
   if (rtcPresente) {
-    oraCacheValida = rtcLeggi(oraCache);
+    oraCacheValida = leggiOra(oraCache);
     ultimaLetturaRtcMs = millis();
   }
 
@@ -1063,6 +1343,12 @@ void loop() {
     return;
   }
 
+  // Ora da internet: alla prima occasione dopo l'accensione e poi ogni
+  // NTP_INTERVALLO_H ore, solo a motori fermi perche' il collegamento al wifi
+  // blocca il programma per qualche secondo.
+  if (wifiCfgValida && tuttiFermi() && (long)(millis() - prossimaSyncMs) >= 0)
+    sincronizzaOra();
+
   if (sospeso) {
     if (statoLed != 0) { statoLed = 0; digitalWrite(LED_BUILTIN, LOW); }
     return;
@@ -1087,9 +1373,21 @@ void loop() {
   // e il risultato tenuto in cache, per non rubare tempo al passo dei motori.
   if (rtcPresente && (millis() - ultimaLetturaRtcMs) >= 1000UL) {
     ultimaLetturaRtcMs = millis();
-    oraCacheValida = rtcLeggi(oraCache);
+    oraCacheValida = leggiOra(oraCache);
   }
-  bool oraValida = oraCacheValida;
+  bool oraValida = oraAttendibile();
+  // RTC azzerato: si lavora per ripiego e si riprova a prendere l'ora da
+  // internet ogni 2 minuti invece che ogni NTP_RIPROVA_MIN.
+  if (oraCacheValida && !oraValida) {
+    if (!avvisoRtcAzzerato) {
+      avvisoRtcAzzerato = true;
+      Serial.println(F("RTC azzerato (data del 2000): ora non attendibile, motori per ripiego."));
+    }
+    unsigned long entro = ultimoTentativoMs + 120000UL;
+    if ((long)(prossimaSyncMs - entro) > 0) prossimaSyncMs = entro;
+  } else {
+    avvisoRtcAzzerato = false;
+  }
   // A mezzanotte fra venerdi' e sabato e fra domenica e lunedi' cambia la
   // fascia, e con essa la quota di giri di ogni ciclo.
   if (oraValida && fineSettimana(oraCache) != pianoFineSettimana) ricalcolaPiano();

@@ -119,8 +119,9 @@ del caricatore a 4 posti (`../watchwinder/`), con questi valori di partenza:
 | Verso | entrambi, metà e metà | `r 0` |
 | Intervallo fra i passi | 1900 µs | `v 1900` |
 | Posti 3 e 4 | spenti | `e3 0`, `e4 0` |
+| Rete wifi | da impostare | `n <rete> <password>` |
 
-Rispetto al 4 posti ci sono due differenze:
+Rispetto al 4 posti ci sono tre differenze:
 
 - **Fascia oraria per il fine settimana.** Il comando `h` accetta quattro
   numeri: inizio e fine dal lunedì al venerdì, poi inizio e fine il sabato e
@@ -132,13 +133,38 @@ Rispetto al 4 posti ci sono due differenze:
 - **RTC cercato di nuovo.** Se all'accensione il modulo RTC non risponde (è
   successo dopo il collegamento del cavo USB), il firmware lo cerca ogni 5
   secondi invece di restare senza ora fino al riavvio successivo.
+- **Ora da internet e ora legale automatica.** Vedi la sezione seguente.
 
 Per la fascia in più la configurazione salvata nella EEPROM del modulo RTC ha
 un formato diverso da quella del 4 posti: spostando il modulo da una scatola
 all'altra si riparte dai valori di fabbrica.
 
-**Ora legale.** L'RTC non la gestisce: a fine marzo e a fine ottobre va
-rimessa l'ora con il comando `T`, altrimenti le fasce slittano di un'ora.
+### Ora da internet
+
+Il Pico 2 W ha il wifi. Il firmware prende l'ora da un server NTP
+(`pool.ntp.org`) all'accensione e poi ogni 12 ore, e la scrive nel modulo RTC.
+L'orologio che il firmware legge resta sempre l'RTC: internet serve solo a
+correggerlo.
+
+- Il collegamento blocca il programma per qualche secondo, quindi avviene
+  solo a motori fermi.
+- Senza rete il caricatore continua con l'RTC, che sbaglia di circa un minuto
+  all'anno, e riprova ogni 15 minuti.
+- Il modulo RTC tiene l'ora UTC; la conversione in ora italiana, con il
+  passaggio fra ora solare e ora legale, la fa il firmware, quindi funziona
+  anche senza rete.
+- Se l'RTC si azzera (riparte dal 1° gennaio 2000, per esempio per un filo
+  che fa contatto incerto) il caricatore gira per ripiego e riprova la rete
+  ogni 2 minuti. Senza rete resta in ripiego, giorno e notte, finché non si
+  rimette l'ora con `T`.
+
+Nome e password della rete si impostano dal monitor seriale con
+`n <rete> <password>` e restano solo nella EEPROM del modulo RTC: non sono nel
+codice, che è pubblico. `n` da solo sincronizza subito, `n -` cancella la
+rete. Il Pico si collega solo a reti a 2,4 GHz.
+
+Il firmware del 4 posti non converte l'ora: con questo modulo RTC segnerebbe
+l'ora UTC.
 
 **Perché 1600 giri in entrambi i versi.** Il Breitling Chronomat 81950 usa il
 calibro Valjoux 7750, che carica in un solo verso e chiede circa 800 giri al
@@ -153,7 +179,9 @@ fascia è più corta.
 Comandi utili da monitor seriale (115200 baud, elenco completo con `?`):
 
 - `s` stato completo, `t` ora e temperatura dell'RTC
-- `T aaaa-mm-gg hh:mm:ss` imposta l'ora
+- `T aaaa-mm-gg hh:mm:ss` imposta l'ora, in ora italiana
+- `n` sincronizza subito l'ora da internet; `n <rete> <password>` salva la
+  rete wifi; `n -` la cancella
 - `h 8 21 10 21` fasce orarie dal lunedì al venerdì e il sabato e la domenica
 - `f` lavora anche fuori fascia, per esempio per caricare un orologio fermo;
   `a` torna al funzionamento normale. Il comando `f` non viene salvato e si
