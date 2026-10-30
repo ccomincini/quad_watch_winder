@@ -13,6 +13,8 @@ perché in bidirezionale solo metà dei giri lo carica.
 
 Esiste anche una **variante a 2 posti** con meccanica diversa e lo stesso
 firmware: vedi [2_orologi/README.md](2_orologi/README.md).
+È in preparazione una **variante a 1 posto** con una NodeMCU V3 (ESP8266):
+vedi [singolo/README.md](singolo/README.md).
 
 ![Schema dei collegamenti](doc/schema-elettrico.svg)
 
@@ -283,6 +285,11 @@ obbligatoria e **uso commerciale non consentito**. Vedi
 **MIT**; il modello 3D, lo schema e il codice originali di **JayS** e lo sketch
 `watchwinder_nano/` che ne deriva sono sotto licenza **CC BY-NC-SA 4.0**. Il
 dettaglio è in [2_orologi/README.md](2_orologi/README.md).
+
+**Variante a 1 posto** — cartella `singolo/`: il modello 3D di **Robbie
+Kieffer**, remix di quello di JayS, le parti di JayS e la scatola modificata
+con il suo sorgente OpenSCAD sono sotto licenza **CC BY-NC-SA 4.0**; il README
+è sotto licenza **MIT**. Il dettaglio è in [singolo/README.md](singolo/README.md).
 
 Chi riutilizza questo repository è tenuto a rispettare entrambe le licenze:
 il firmware è liberamente riutilizzabile anche in ambito commerciale, le parti

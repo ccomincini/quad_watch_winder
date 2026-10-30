@@ -26,7 +26,7 @@ NOTA SULLE PARTI MECCANICHE
 
 La licenza MIT qui sopra copre esclusivamente il firmware (cartella
 watchwinder/ e 2_orologi/watchwinder_2posti/), la documentazione (README.md,
-doc/, 2_orologi/README.md) e gli schemi elettrici.
+doc/, 2_orologi/README.md, singolo/README.md) e gli schemi elettrici.
 
 I file 3D contenuti in quad-watch-winder-model_files/ NON sono coperti da
 questa licenza: sono opera di Karel, pubblicati su Printables con licenza
@@ -41,3 +41,9 @@ sketch derivato 2_orologi/watchwinder_nano/ NON sono coperti da questa
 licenza: restano soggetti alla licenza Creative Commons Attribuzione - Non
 commerciale - Condividi allo stesso modo 4.0 Internazionale (CC BY-NC-SA 4.0).
 Si veda 2_orologi/README.md.
+
+Nella cartella singolo/ i file 3D (il modello "Single Watch Winder" di
+Robbie Kieffer, remix del progetto di JayS, le parti di JayS, la copia della
+pagina Printables e la scatola modificata con il suo sorgente OpenSCAD) NON
+sono coperti da questa licenza: restano soggetti alla licenza CC BY-NC-SA 4.0.
+Si veda singolo/README.md.
