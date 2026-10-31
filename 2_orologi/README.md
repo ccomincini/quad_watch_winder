@@ -55,7 +55,7 @@ resta sotto la licenza MIT del repository.
 | `watchwinder_nano/` | modifica di JayS | Sketch per Arduino Nano, non in uso (vedi in fondo) |
 
 I file del modello vengono dallo zip scaricato dalla pagina Printables.
-`code.ino` e `wiring.pdf` sono pubblicati a parte, fra gli «Other files» della
+`code.ino` e `wiring.pdf` sono pubblicati a parte, fra gli "Other files" della
 stessa pagina, e sono stati scaricati l'11/10/2026.
 
 ## Materiale
@@ -174,7 +174,7 @@ l'ora UTC.
 
 **Perché 1600 giri in entrambi i versi.** Il Breitling Chronomat 81950 usa il
 calibro Valjoux 7750, che carica in un solo verso e chiede circa 800 giri al
-giorno. In questo caricatore «giroscopico» il verso di rotazione rispetto al
+giorno. In questo caricatore "giroscopico" il verso di rotazione rispetto al
 quadrante non è riconoscibile, quindi si gira in entrambi i versi con i giri
 raddoppiati: almeno metà, circa 800, cadono nel verso utile. Il Seiko 5 carica
 in entrambi i versi e a molla carica il meccanismo slitta senza danni. Ogni

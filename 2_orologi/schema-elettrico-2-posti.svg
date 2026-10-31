@@ -164,7 +164,7 @@
   <text x="60" y="918" font-size="12.5" fill="#333"><tspan font-weight="bold">Configurazione.</tspan> Firmware del 4 posti invariato. Da monitor seriale: <tspan font-family="Menlo, Consolas, monospace">e3 0</tspan>, <tspan font-family="Menlo, Consolas, monospace">e4 0</tspan> (posti 3 e 4 spenti),</text>
   <text x="60" y="936" font-size="12.5" fill="#333"><tspan font-family="Menlo, Consolas, monospace">r 1</tspan> (solo senso orario, per il Valjoux 7750), <tspan font-family="Menlo, Consolas, monospace">p 800</tspan> (giri al giorno), <tspan font-family="Menlo, Consolas, monospace">h 8 20</tspan> (fascia oraria), poi <tspan font-family="Menlo, Consolas, monospace">w</tspan> per salvare.</text>
 
-  <text x="60" y="970" font-size="11" fill="#888">Meccanica: «Arduino Double Watch Winder» di JayS, Printables 1227833, CC BY-NC-SA 4.0. Le schede ULN2003 non vanno mai</text>
+  <text x="60" y="970" font-size="11" fill="#888">Meccanica: "Arduino Double Watch Winder" di JayS, Printables 1227833, CC BY-NC-SA 4.0. Le schede ULN2003 non vanno mai</text>
   <text x="60" y="986" font-size="11" fill="#888">alimentate dai pin del Pico.</text>
 
 </svg>
