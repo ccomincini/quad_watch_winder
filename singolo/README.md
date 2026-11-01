@@ -67,20 +67,26 @@ Modifiche rispetto all'originale:
    piano superiore: il lato del micro USB si infila in una fessura nella
    parete curva, con una finestra di 8,6 x 3,6 mm per la presa e un incavo
    esterno di 12 x 8 mm per la plastica della spina; il lato dell'antenna
-   poggia su due appoggi a vite. Due fori a imbuto con canna guida
-   permettono di premere i pulsanti RST e FLASH dall'esterno, con uno
-   stuzzicadenti;
-4. fori degli appoggi della scheda ULN2003 ridotti da 3,2 a 2,5 mm, per
-   avvitare direttamente nella plastica;
+   poggia su due appoggi a vite. Due fori diritti da 3 mm nel piano
+   superiore permettono di premere i pulsanti RST e FLASH dall'esterno, con
+   uno stuzzicadenti;
+4. fori degli appoggi della scheda ULN2003 ridotti da 3,2 a 2,8 mm, per
+   avvitare le M3 direttamente nella plastica;
 5. aggiunto il foro del supporto alto, che mancava, e le sedi dei dadi M3 per
    i due supporti, come nel caricatore a 2 posti;
 6. quattro appoggi per il modulo RTC DS3231: tre sotto i suoi fori e uno
-   all'angolo che non ha il foro.
+   all'angolo che non ha il foro. Tengono il modulo 7 mm sopra il piano
+   superiore, per lasciare aria e lo spazio per i connettori dei cavetti.
 
 Montaggio della NodeMCU: si infila il lato del micro USB nella fessura
 tenendo la scheda un poco inclinata, poi si abbassa il lato dell'antenna
 sugli appoggi e si avvita. Il modulo RTC si monta con la batteria verso il
 coperchio inferiore, così la si cambia aprendo la scatola.
+
+Gli appoggi a vite della NodeMCU e del modulo RTC hanno uno smusso a 45
+gradi alla base e un foro da 2,8 mm svasato all'imbocco. Quelli del modulo
+RTC hanno un diametro di 6 mm; quelli della NodeMCU di 5 mm, perché sul
+suo lato componenti non c'è spazio per una cima più larga.
 
 Il coperchio inferiore originale si monta senza modifiche: colonne e fori
 delle sue viti sono rimasti com'erano.
@@ -90,7 +96,8 @@ Viti:
 - NodeMCU: due M3x8 sul lato dell'antenna, avvitate nella plastica;
 - modulo RTC: due M3x8 nei fori in diagonale; il terzo foro ha l'appoggio
   forato, la vite è facoltativa. I fori del modulo misurano circa 2,8 mm:
-  se la M3 non passa, si allargano con una punta da 3 mm;
+  vanno allargati con una punta da 3,2 mm, perché la vite deve passare
+  libera nel circuito e fare presa solo nell'appoggio;
 - ULN2003: M3x8, avvitate nella plastica;
 - supporti: M3x6 con dado M3. Una M3x8 nel supporto basso toccherebbe il
   motore.
