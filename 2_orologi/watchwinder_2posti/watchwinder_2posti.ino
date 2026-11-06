@@ -1417,10 +1417,13 @@ void loop() {
     return;
   }
 
-  // Gestione del ciclo
+  // Gestione del ciclo. Dopo la notte possono essere passati molti cicli: si
+  // recuperano in un colpo solo. Recuperandone uno per giro di loop() la
+  // partenza restava armata e, a fine della prima sessione del mattino, ne
+  // ripartiva subito una seconda.
   unsigned long trascorso = millis() - cicloInizioMs;
   if (trascorso >= cicloDurataMs) {
-    cicloInizioMs += cicloDurataMs;
+    cicloInizioMs += (trascorso / cicloDurataMs) * cicloDurataMs;
     trascorso = millis() - cicloInizioMs;
     for (uint8_t m = 0; m < 4; m++) winder[m].partenzaArmata = true;
   }
