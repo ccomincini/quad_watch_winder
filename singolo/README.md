@@ -93,10 +93,14 @@ Funziona come il caricatore a 2 posti, con un solo motore:
   i casi;
 - ogni 15 minuti fa la sua quota di giri, metà in senso orario e metà in
   senso antiorario, poi si ferma con le bobine spente;
-- di fabbrica 1600 giri al giorno in entrambi i versi, come nel 2 posti:
-  nel caricatore giroscopico non si vede in che verso gira l'orologio
-  rispetto al quadrante, quindi almeno 800 giri cadono nel verso utile anche
-  a un orologio che si carica in un verso solo;
+- di fabbrica 800 giri al giorno in entrambi i versi, pensati per
+  l'orologio a cui è destinato: un Longines automatico da donna degli anni
+  '80, di cui non si conoscono modello e calibro. I movimenti automatici da
+  donna più diffusi (per esempio l'ETA 2671, base del Longines L561)
+  chiedono circa 650 giri al giorno in entrambi i versi, e Longines indica
+  650-800 per i suoi automatici. Se l'orologio si fermasse pur stando sul
+  caricatore, probabilmente si carica in un verso solo: in quel caso
+  portare i giri a 1300-1600 con `p`;
 - il modulo RTC tiene l'ora UTC e il firmware la converte in ora italiana,
   con il passaggio automatico fra ora solare e ora legale, anche senza rete;
 - prende l'ora da internet via wifi all'accensione e poi ogni 12 ore,
@@ -114,8 +118,11 @@ comandi; `w` salva nella memoria EEPROM del modulo RTC):
   domenica; con due numeri soli vale la stessa fascia per tutti i giorni;
 - `p <giri>` giri al giorno, `r 0|1|2` verso (entrambi, solo orario, solo
   antiorario), `i 0|1` inverte il verso del motore;
-- `v <microsecondi>` tempo fra un passo e l'altro, di fabbrica 1900 (circa
-  7,8 secondi per giro): se la plastica vibra, provare valori diversi;
+- `v <microsecondi>` tempo fra un passo e l'altro, di fabbrica 1200 (circa
+  4,9 secondi per giro). Il rumore dipende dalle vibrazioni della plastica
+  più che dalla velocità: con l'orologio montato 1200 è risultato il valore
+  più silenzioso fra quelli provati (da 1200 a 4000). Sotto 1200 il motore
+  rischia di perdere passi;
 - `m` un giro per verso, `d` tre giri in senso orario, `s` stato,
   `t` ora e temperatura dell'RTC.
 

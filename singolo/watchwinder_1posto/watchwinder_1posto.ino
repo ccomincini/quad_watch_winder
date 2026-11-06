@@ -71,21 +71,27 @@
 
 // --- Rotazione ---------------------------------------------------------------
 // TPD = Turns Per Day, giri completi al giorno richiesti dall'orologio.
-// Nel winder giroscopico il verso rispetto al quadrante non e' riconoscibile,
-// quindi di fabbrica si gira in entrambi i versi con i giri raddoppiati,
-// come nel 2 posti: almeno meta' cadono nel verso utile anche a un orologio
-// che carica in un verso solo. Da adattare all'orologio con 'p' e 'r'.
-#define DEF_TPD          1600
+// Il caricatore e' per un Longines automatico da donna degli anni '80, di
+// cui non si conoscono modello e calibro. I movimenti automatici da donna
+// piu' diffusi (per esempio l'ETA 2671, base del Longines L561) chiedono
+// circa 650 giri al giorno e si caricano in entrambi i versi; per i suoi
+// automatici Longines indica 650-800. Si usano 800 giri in entrambi i
+// versi, con un po' di margine. Se l'orologio si fermasse pur stando sul
+// caricatore, probabilmente si carica in un verso solo: salire a 1300-1600
+// con il comando 'p'.
+#define DEF_TPD           800
 
 // Durata di un ciclo completo: ogni CICLO_MINUTI il winder esegue la sua
 // quota di giri, poi resta fermo fino al ciclo successivo.
 #define DEF_CICLO_MINUTI   15
 
 // Intervallo fra due mezzi passi, in microsecondi.
-// 1900 us -> circa 7,8 s per giro. Piu' alto = piu' lento e silenzioso;
-// sotto i 1200 us il 28BYJ-48 comincia a perdere passi. Se la plastica
-// vibra, provare valori diversi con il comando 'v'.
-#define DEF_PASSO_US     1900
+// 1200 us -> circa 4,9 s per giro. Sotto i 1200 us il 28BYJ-48 comincia a
+// perdere passi. Il rumore dipende dalle risonanze della plastica, non solo
+// dalla velocita': nelle prove del 6/11/2026, con l'orologio montato, 1200
+// e' stato il valore piu' silenzioso fra 1200, 1500, 1800, 1900, 2500, 3000
+// e 4000. Per provarne altri si usa il comando 'v'.
+#define DEF_PASSO_US     1200
 
 // Pausa fra la fase oraria e quella antioraria, in millisecondi.
 #define DEF_PAUSA_META_MS 1500
@@ -731,7 +737,7 @@ void stampaAiuto() {
   Serial.println(F("  h <ini> <fin> <ini> <fin>   lun-ven e sab-dom, es. 'h 8 21 10 21'"));
   Serial.println(F("  p <tpd>        giri al giorno, es. 'p 650'"));
   Serial.println(F("  c <minuti>     durata del ciclo, es. 'c 15'"));
-  Serial.println(F("  v <us>         microsecondi fra i passi, es. 'v 1900'"));
+  Serial.println(F("  v <us>         microsecondi fra i passi, es. 'v 1200'"));
   Serial.println(F("  r <verso>      0=bidirezionale 1=orario 2=antiorario"));
   Serial.println(F("  g <rapporto>   giri motore per giro orologio, es. 'g 1.0'"));
   Serial.println(F("  i <0|1>        inverte il verso del motore, es. 'i 1'"));
