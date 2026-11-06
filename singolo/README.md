@@ -7,8 +7,8 @@ diversa dagli altri due caricatori: una **NodeMCU V3** di AZ-Delivery (modulo
 Wi-Fi ESP8266), un orologio in tempo reale (RTC) DS3231 e un solo motore
 passo-passo 28BYJ-48 con scheda driver ULN2003.
 
-Lavoro in corso: la scatola è progettata ma non ancora provata, il firmware è
-in preparazione.
+Lavoro in corso: collegamenti e firmware sono stati provati sul banco il
+6 novembre 2026; la scatola è progettata ma non ancora provata.
 
 ## Progetti originali
 
@@ -33,11 +33,95 @@ sorgente OpenSCAD. Per questi file:
 - non si possono vendere né il progetto né le sue modifiche;
 - ogni modifica va distribuita con la stessa licenza CC BY-NC-SA 4.0.
 
-**MIT (Carlo Comincini)** — questo README.
+**MIT (Carlo Comincini)** — il firmware `watchwinder_1posto/`, lo schema
+elettrico `schema-elettrico-1-posto.svg` e questo README. Il firmware non
+deriva dal codice di JayS ma da quello del caricatore a 2 posti di Carlo.
+
+## Collegamenti
+
+Schema completo: [schema-elettrico-1-posto.svg](schema-elettrico-1-posto.svg).
+
+- **Modulo RTC DS3231** (ZS-042)
+  - SCL su D1 (GPIO5), SDA su D2 (GPIO4)
+  - VCC sul 3V della NodeMCU, **mai sul 5 V**; GND su G
+  - 32K e SQW non collegati; batteria tampone CR2032 comune, non ricaricabile
+- **Scheda driver ULN2003**
+  - IN1 su D5 (GPIO14), IN2 su D6 (GPIO12), IN3 su D7 (GPIO13), IN4 su D8
+    (GPIO15)
+  - + su VU, cioè i 5 V che arrivano dal connettore USB; - su G
+  - condensatore elettrolitico da 470-1000 µF, 16 V, fra + e - vicino al
+    driver, con la banda del negativo verso G
+- **Motore 28BYJ-48** nel connettore bianco del driver
+- **Alimentazione** solo dal micro USB della NodeMCU, con un caricatore da
+  5 V e almeno 1 A. Non collegare mai un secondo alimentatore su VU con il
+  cavo USB inserito.
+- **LED di stato**: quello già montato sulla NodeMCU (D4), acceso quando il
+  caricatore è nella fascia oraria di lavoro.
+
+D8 deve essere a livello basso all'accensione, altrimenti la scheda non
+parte: lo tengono basso la resistenza della NodeMCU e l'ingresso
+dell'ULN2003, ed è stato verificato. Se una scheda diversa non si avviasse,
+spostare IN4 su D0 (GPIO16) e cambiare il pin nel firmware. Non usare D3 e
+D4, che all'accensione devono restare alti.
+
+I piedini della NodeMCU sono saldati verso il basso: i fili si saldano
+sulle loro punte, più sicure dei connettori Dupont contro le vibrazioni.
+
+## Firmware
+
+Sketch: `watchwinder_1posto/watchwinder_1posto.ino`, nessuna libreria
+esterna. Nell'Arduino IDE serve il pacchetto per ESP8266
+(`https://arduino.esp8266.com/stable/package_esp8266com_index.json`, versione
+3.1.2) e la scheda **NodeMCU 1.0 (ESP-12E Module)**. Da riga di comando,
+dalla cartella `singolo/`:
+
+```
+arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 watchwinder_1posto
+```
+
+```
+arduino-cli upload --fqbn esp8266:esp8266:nodemcuv2 -p /dev/cu.usbserial-110 watchwinder_1posto
+```
+
+La NodeMCU ha un chip USB CH340G, riconosciuto da macOS senza driver; il
+nome della porta può cambiare.
+
+Funziona come il caricatore a 2 posti, con un solo motore:
+
+- lavora dalle 08:00 alle 21:00 dal lunedì al venerdì e dalle 10:00 alle
+  21:00 il sabato e la domenica, con gli stessi giri al giorno in tutti e due
+  i casi;
+- ogni 15 minuti fa la sua quota di giri, metà in senso orario e metà in
+  senso antiorario, poi si ferma con le bobine spente;
+- di fabbrica 1600 giri al giorno in entrambi i versi, come nel 2 posti:
+  nel caricatore giroscopico non si vede in che verso gira l'orologio
+  rispetto al quadrante, quindi almeno 800 giri cadono nel verso utile anche
+  a un orologio che si carica in un verso solo;
+- il modulo RTC tiene l'ora UTC e il firmware la converte in ora italiana,
+  con il passaggio automatico fra ora solare e ora legale, anche senza rete;
+- prende l'ora da internet via wifi all'accensione e poi ogni 12 ore,
+  sempre a motore fermo; fra una sincronizzazione e l'altra la radio è
+  spenta. Se l'RTC ha perso l'ora (data del 2000) il motore lavora comunque
+  e la sincronizzazione si ritenta ogni 2 minuti.
+
+Configurazione dal monitor seriale a 115200 baud (`?` mostra tutti i
+comandi; `w` salva nella memoria EEPROM del modulo RTC):
+
+- `n <rete> <password>`: salva la rete wifi nella EEPROM del modulo RTC e
+  sincronizza subito l'ora. Nome e password non stanno mai nel codice, che
+  è pubblico. `n -` cancella la rete salvata;
+- `h 8 21 10 21`: fasce orarie, prima dal lunedì al venerdì, poi sabato e
+  domenica; con due numeri soli vale la stessa fascia per tutti i giorni;
+- `p <giri>` giri al giorno, `r 0|1|2` verso (entrambi, solo orario, solo
+  antiorario), `i 0|1` inverte il verso del motore;
+- `v <microsecondi>` tempo fra un passo e l'altro, di fabbrica 1900 (circa
+  7,8 secondi per giro): se la plastica vibra, provare valori diversi;
+- `m` un giro per verso, `d` tre giri in senso orario, `s` stato,
+  `t` ora e temperatura dell'RTC.
 
 ## File
 
-Tutti in `single-watch-winder-model_files/`.
+I file 3D sono tutti in `single-watch-winder-model_files/`.
 
 | File | Origine | Contenuto |
 |------|---------|-----------|

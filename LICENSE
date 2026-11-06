@@ -24,8 +24,9 @@ SOFTWARE.
 
 NOTA SULLE PARTI MECCANICHE
 
-La licenza MIT qui sopra copre esclusivamente il firmware (cartella
-watchwinder/ e 2_orologi/watchwinder_2posti/), la documentazione (README.md,
+La licenza MIT qui sopra copre esclusivamente il firmware (cartelle
+watchwinder/, 2_orologi/watchwinder_2posti/ e singolo/watchwinder_1posto/),
+la documentazione (README.md,
 doc/, 2_orologi/README.md, singolo/README.md) e gli schemi elettrici.
 
 I file 3D contenuti in quad-watch-winder-model_files/ NON sono coperti da
