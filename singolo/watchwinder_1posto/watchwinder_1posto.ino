@@ -22,7 +22,12 @@
  *   - nome e password della rete si impostano dal monitor seriale (comando
  *     'n') e restano solo nella EEPROM del modulo RTC, mai nel codice;
  *   - configurazione salvata nella EEPROM del modulo RTC (comando 'w'), con
- *     un formato diverso da quello del 2 posti (CONFIG_MAGIC distinto).
+ *     un formato diverso da quello del 2 posti (CONFIG_MAGIC distinto);
+ *   - configurazione anche dal telefono, senza cavo: premendo RST due volte
+ *     a circa un secondo di distanza (o con il comando 'k') la scheda ferma
+ *     il motore, crea la rete wifi aperta "Watchwinder" e mostra una pagina
+ *     web per rete, giri, fasce orarie, velocita' e ora. La rete si spegne
+ *     dopo il salvataggio o dopo 10 minuti senza attivita'.
  *
  *  Hardware:
  *    - NodeMCU V3 (LoLin, modulo ESP-12, chip USB CH340G)
@@ -39,7 +44,18 @@
  *    ULN2003:  IN1 -> D5 (GPIO14)   IN2 -> D6 (GPIO12)
  *              IN3 -> D7 (GPIO13)   IN4 -> D8 (GPIO15)
  *              +   -> VU (5 V del connettore USB)        -   -> G
- *    LED di stato: quello integrato su D4 (GPIO2), acceso = fascia attiva.
+ *    LED di stato: quello integrato su D4 (GPIO2), acceso = fascia attiva,
+ *    lampeggiante = configurazione da telefono.
+ *    Pulsante RST (gia' sulla scheda): due pressioni entro 5 secondi aprono
+ *    la configurazione da telefono. Il segnale fra i due riavvii sta nella
+ *    memoria interna dell'ESP8266, che resiste al RST ma non allo
+ *    spegnimento.
+ *    Pulsante FLASH (GPIO0): tenuto 3 s apre o chiude la configurazione, se
+ *    fa contatto. Sulla scheda di Carlo NON funziona (provato il 6/11/2026:
+ *    tenuto premuto durante il RST non porta la scheda in programmazione),
+ *    per questo c'e' il doppio RST. Su una scheda con il FLASH funzionante
+ *    va premuto a scheda accesa: premuto mentre si collega il cavo, avvia la
+ *    scheda in modalita' di programmazione.
  *
  *  ATTENZIONE: il VCC del modulo RTC va sul 3V, mai sul 5 V. Mai collegare un
  *  secondo alimentatore su VU con il cavo USB inserito.
@@ -56,6 +72,8 @@
 #include <Wire.h>
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
+#include <ESP8266WebServer.h>
+#include <DNSServer.h>
 
 // ============================================================================
 //  CONFIGURAZIONE - valori di default, modificabili anche da monitor seriale
@@ -120,6 +138,15 @@
 #define WIFI_ATTESA_MS    15000    // tempo massimo per collegarsi alla rete
 #define NOME_RETE   "watchwinder"  // nome con cui la scheda si presenta in rete
 
+// --- Configurazione da telefono ----------------------------------------------
+#define RETE_CONFIG       "Watchwinder"  // rete wifi aperta creata dalla scheda
+#define PRESSIONE_CONFIG_MS   3000       // FLASH tenuto premuto per aprirla/chiuderla
+#define CONFIG_DURATA_MIN       10       // si chiude dopo 10 minuti senza richieste
+#define MAX_RETI_VICINE         12       // reti proposte nella pagina
+#define DOPPIO_RST_MS         5000       // finestra per il secondo RST
+#define DOPPIO_RST_BLOCCO       32       // blocco da 4 byte nella memoria RTC dell'ESP8266
+#define DOPPIO_RST_MAGIC  0x44525354UL   // "DRST": primo RST gia' avvenuto
+
 // ============================================================================
 //  PIN
 // ============================================================================
@@ -129,6 +156,10 @@
 
 // IN1..IN4 del driver ULN2003
 const uint8_t PIN_MOTORE[4] = { D5, D6, D7, D8 };   // GPIO14, 12, 13, 15
+
+// Pulsante FLASH della NodeMCU: chiude a massa, resistenza di pull-up sulla
+// scheda. Dopo l'avvio e' un ingresso libero.
+#define PIN_FLASH  0     // GPIO0 (D3)
 
 // ============================================================================
 //  INDIRIZZI I2C
@@ -258,6 +289,22 @@ unsigned long ultimaLetturaRtcMs = 0;
 int8_t statoLed = -1;
 
 String bufferSeriale = "";
+
+// Configurazione da telefono
+const IPAddress IP_CONFIG(192, 168, 4, 1);
+ESP8266WebServer server(80);
+DNSServer        dns;
+bool          modoConfig = false;
+unsigned long configAttivitaMs = 0;     // millis() dell'ultima richiesta ricevuta
+bool          uscitaProgrammata = false;
+unsigned long uscitaMs = 0;             // millis() a cui chiudere la configurazione
+bool          syncDopoConfig = false;   // rete cambiata: sincronizzare all'uscita
+unsigned long ultimoLampeggioMs = 0;
+String        retiVicine[MAX_RETI_VICINE];
+uint8_t       numRetiVicine = 0;
+unsigned long flashInizioMs = 0;        // 0 = pulsante non premuto
+bool          flashAttesaRilascio = false;
+bool          doppioRstInAttesa = false; // segnale scritto, da cancellare a fine finestra
 
 // Il LED integrato della NodeMCU (GPIO2) si accende a livello basso.
 void impostaLed(bool acceso) {
@@ -686,15 +733,27 @@ void stampaDueCifre(uint8_t v) {
   Serial.print(v);
 }
 
-void stampaOra(const DataOra &t) {
+// Data e ora in forma leggibile, es. "ven 06/11/2026 16:30:00".
+String testoOra(const DataOra &t) {
   static const char *const NOMI_GIORNO[7] = { "dom", "lun", "mar", "mer", "gio", "ven", "sab" };
-  Serial.print(NOMI_GIORNO[giornoSettimana(t)]); Serial.print(' ');
-  stampaDueCifre(t.giorno); Serial.print('/');
-  stampaDueCifre(t.mese);   Serial.print('/');
-  Serial.print(t.anno);     Serial.print(' ');
-  stampaDueCifre(t.ora);    Serial.print(':');
-  stampaDueCifre(t.minuto); Serial.print(':');
-  stampaDueCifre(t.secondo);
+  char s[32];
+  snprintf(s, sizeof(s), "%s %02u/%02u/%04u %02u:%02u:%02u", NOMI_GIORNO[giornoSettimana(t)],
+           t.giorno, t.mese, t.anno, t.ora, t.minuto, t.secondo);
+  return String(s);
+}
+
+void stampaOra(const DataOra &t) {
+  Serial.print(testoOra(t));
+}
+
+// Legge "aaaa-mm-gg hh:mm:ss" (anche senza zeri iniziali) e controlla i valori.
+bool dataOraDaTesto(const char *testo, DataOra &t) {
+  int a, me, g, h, mi, se;
+  if (sscanf(testo, "%d-%d-%d %d:%d:%d", &a, &me, &g, &h, &mi, &se) != 6) return false;
+  if (a < 2000 || a > 2099 || me < 1 || me > 12 || g < 1 || g > 31 ||
+      h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 59) return false;
+  t.anno = a; t.mese = me; t.giorno = g; t.ora = h; t.minuto = mi; t.secondo = se;
+  return true;
 }
 
 void stampaFascia(uint8_t ini, uint8_t fin) {
@@ -725,6 +784,7 @@ void stampaAiuto() {
   Serial.println(F("  n              sincronizza subito l'ora da internet"));
   Serial.println(F("  n <rete> <password>   salva la rete wifi in EEPROM e sincronizza"));
   Serial.println(F("  n -            cancella la rete wifi salvata"));
+  Serial.println(F("  k              apre/chiude la configurazione da telefono (come due RST ravvicinati)"));
   Serial.println();
   Serial.println(F("  m              test: un giro orario + un giro antiorario"));
   Serial.println(F("  d              test verso: 3 giri solo orari"));
@@ -771,7 +831,8 @@ void stampaStato() {
   Serial.print(F("Fascia sab-dom .. ")); stampaFascia(cfg.oraInizioWe, cfg.oraFineWe);
 
   Serial.print(F("Modalita' ....... "));
-  if (sospeso)          Serial.println(F("SOSPESA (comando x)"));
+  if (modoConfig)       Serial.println(F("CONFIGURAZIONE DA TELEFONO (rete " RETE_CONFIG ")"));
+  else if (sospeso)     Serial.println(F("SOSPESA (comando x)"));
   else if (forzaAttivo) Serial.println(F("FORZATA ATTIVA (comando f)"));
   else if (ok && t.anno >= 2026) Serial.println(fasciaAttiva(t) ? F("ATTIVA (giorno)") : F("RIPOSO (notte)"));
   else if (ok)          Serial.println(F("ATTIVA (RTC azzerato, ripiego)"));
@@ -918,10 +979,376 @@ bool sincronizzaOra() {
 }
 
 // ============================================================================
+//  CONFIGURAZIONE DA TELEFONO (rete wifi propria e pagina web)
+// ============================================================================
+//
+// Con due RST ravvicinati, con FLASH tenuto 3 secondi o con il comando 'k' la scheda ferma il
+// motore e crea la rete aperta RETE_CONFIG. Un server DNS risponde a ogni nome
+// con l'indirizzo della scheda: cosi' il telefono, che cerca una sua pagina di
+// prova su internet, riceve la nostra e la apre da solo, come nelle reti
+// degli alberghi. La pagina non mostra mai la password salvata.
+
+String testoHtml(const String &s) {
+  String r;
+  r.reserve(s.length() + 8);
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if      (c == '&')  r += F("&amp;");
+    else if (c == '<')  r += F("&lt;");
+    else if (c == '>')  r += F("&gt;");
+    else if (c == '"')  r += F("&quot;");
+    else if (c == '\'') r += F("&#39;");
+    else                r += c;
+  }
+  return r;
+}
+
+void apriPagina(String &p) {
+  p.reserve(7000);
+  p = F("<!DOCTYPE html><html lang=\"it\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>Caricaorologi</title><style>"
+        "body{font-family:-apple-system,Helvetica,Arial,sans-serif;margin:0 auto;max-width:480px;"
+        "padding:16px;color:#222;background:#faf8f5}"
+        "h1{font-size:1.4em;margin:.2em 0 .6em}h2{font-size:1.1em;margin:1.4em 0 .4em;color:#6b4f1d}"
+        "label{display:block;margin:.6em 0 .2em}"
+        "input,select{font-size:1em;padding:.45em;border:1px solid #bbb;border-radius:6px;box-sizing:border-box}"
+        "input.l,select{width:100%}input.o{width:4.2em}"
+        "button{font-size:1.05em;padding:.7em;border:0;border-radius:8px;background:#6b4f1d;color:#fff;"
+        "width:100%;margin-top:1em}button.s{background:#8a8a8a}"
+        ".nota{font-size:.85em;color:#666;margin:.3em 0}.err{color:#b00020}"
+        ".stato{background:#fff;border:1px solid #ddd;border-radius:8px;padding:.6em .8em}"
+        ".stato p{margin:.25em 0}a{color:#6b4f1d}"
+        "</style></head><body><h1>Caricaorologi</h1>");
+}
+
+void inviaPagina(String &p) {
+  p += F("</body></html>");
+  server.send(200, "text/html; charset=utf-8", p);
+}
+
+void aggiungiNumero(String &p, const __FlashStringHelper *nome, int valore,
+                    int minimo, int massimo, const __FlashStringHelper *classe) {
+  p += F("<input class=\""); p += classe;
+  p += F("\" name=\"");      p += nome;
+  p += F("\" type=\"number\" inputmode=\"numeric\" min=\""); p += String(minimo);
+  p += F("\" max=\"");       p += String(massimo);
+  p += F("\" value=\"");     p += String(valore);
+  p += F("\">");
+}
+
+void paginaPrincipale() {
+  configAttivitaMs = millis();
+  String p;
+  apriPagina(p);
+
+  DataOra t;
+  bool oraOk = rtcPresente && leggiOra(t) && t.anno >= 2026;
+  p += F("<div class=\"stato\"><p>Ora: <b>");
+  if (oraOk) p += testoOra(t);
+  else       p += F("non impostata");
+  p += F("</b></p><p>Funzionamento: ");
+  if (sospeso)     p += F("sospeso");
+  else if (!oraOk) p += F("gira sempre, finché l'ora non è impostata");
+  else             p += fasciaAttiva(t) ? F("nella fascia di lavoro") : F("a riposo, fuori fascia");
+  p += F("</p><p>Rete wifi: ");
+  if (wifiCfgValida) {
+    p += testoHtml(wifiCfg.ssid);
+    if (syncFatta) { p += F(", ora presa da internet il "); p += testoOra(oraUltimaSync); }
+  } else {
+    p += F("nessuna");
+  }
+  p += F("</p></div>");
+
+  // Rete wifi
+  p += F("<form method=\"post\" action=\"/salva\"><h2>Rete wifi</h2>"
+         "<label>Nome della rete</label><input class=\"l\" name=\"ssid\" list=\"reti\" maxlength=\"32\" "
+         "autocapitalize=\"off\" autocorrect=\"off\" spellcheck=\"false\" value=\"");
+  if (wifiCfgValida) p += testoHtml(wifiCfg.ssid);
+  p += F("\"><datalist id=\"reti\">");
+  for (uint8_t i = 0; i < numRetiVicine; i++) {
+    p += F("<option value=\""); p += testoHtml(retiVicine[i]); p += F("\">");
+  }
+  p += F("</datalist><label>Password</label><input class=\"l\" name=\"pw\" type=\"password\" "
+         "maxlength=\"63\" autocomplete=\"off\">"
+         "<p class=\"nota\">Password vuota: con lo stesso nome di rete resta quella salvata, con un "
+         "nome nuovo vale come rete senza password. Nome vuoto: nessuna rete, l'ora la tiene "
+         "l'orologio interno.</p>");
+
+  // Orologio
+  p += F("<h2>Orologio</h2><label>Giri al giorno</label>");
+  aggiungiNumero(p, F("tpd"), cfg.tpd, 100, 2000, F("l"));
+  p += F("<label>Verso di rotazione</label><select name=\"verso\">");
+  static const char *const VERSI[3] = { "entrambi i versi", "solo orario", "solo antiorario" };
+  for (uint8_t i = 0; i < 3; i++) {
+    p += F("<option value=\""); p += String(i); p += '"';
+    if (cfg.modoVerso == i) p += F(" selected");
+    p += '>'; p += VERSI[i]; p += F("</option>");
+  }
+  p += F("</select>");
+
+  // Orari
+  p += F("<h2>Orari di lavoro</h2><p>Lunedì-venerdì dalle ");
+  aggiungiNumero(p, F("i1"), cfg.oraInizio, 0, 23, F("o"));
+  p += F(" alle ");
+  aggiungiNumero(p, F("f1"), cfg.oraFine, 0, 23, F("o"));
+  p += F("</p><p>Sabato e domenica dalle ");
+  aggiungiNumero(p, F("i2"), cfg.oraInizioWe, 0, 23, F("o"));
+  p += F(" alle ");
+  aggiungiNumero(p, F("f2"), cfg.oraFineWe, 0, 23, F("o"));
+  p += F("</p><p class=\"nota\">Ore intere. Inizio uguale alla fine: sempre attivo.</p>");
+
+  // Motore
+  p += F("<h2>Motore</h2><label>Microsecondi fra un passo e l'altro</label>");
+  aggiungiNumero(p, F("v"), cfg.passoUs, 1000, 10000, F("l"));
+  p += F("<p class=\"nota\">Più alto: più lento. Sotto 1200 il motore può perdere passi.</p>"
+         "<button type=\"submit\">Salva e torna al funzionamento normale</button></form>");
+
+  // Ora dal telefono
+  p += F("<h2>Ora</h2><form method=\"post\" action=\"/ora\" onsubmit=\"var d=new Date();"
+         "this.t.value=d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate()+' '+"
+         "d.getHours()+':'+d.getMinutes()+':'+d.getSeconds()\">"
+         "<input type=\"hidden\" name=\"t\"><button type=\"submit\">Prendi l'ora dal telefono</button>"
+         "</form><p class=\"nota\">Serve solo senza rete wifi: con la rete l'ora arriva da internet.</p>"
+         "<form method=\"post\" action=\"/esci\"><button class=\"s\" type=\"submit\">Esci senza salvare"
+         "</button></form><p class=\"nota\">Questa rete si spegne da sola dopo ");
+  p += String(CONFIG_DURATA_MIN);
+  p += F(" minuti senza attività.</p>");
+  inviaPagina(p);
+}
+
+void paginaMessaggio(const String &messaggio, bool conRitorno) {
+  String p;
+  apriPagina(p);
+  p += messaggio;
+  if (conRitorno) p += F("<p><a href=\"/\">Torna alla pagina delle impostazioni</a></p>");
+  inviaPagina(p);
+}
+
+int argNumero(const char *nome) {
+  String s = server.arg(nome);
+  s.trim();
+  if (s.length() == 0) return -1;
+  for (size_t i = 0; i < s.length(); i++) if (s[i] < '0' || s[i] > '9') return -1;
+  return s.toInt();
+}
+
+void salvaDaTelefono() {
+  configAttivitaMs = millis();
+  int tpd   = argNumero("tpd");
+  int verso = argNumero("verso");
+  int passo = argNumero("v");
+  int ore[4] = { argNumero("i1"), argNumero("f1"), argNumero("i2"), argNumero("f2") };
+  String ssid = server.arg("ssid");
+  ssid.trim();
+  String pw = server.arg("pw");
+
+  String errore;
+  if (tpd < 100 || tpd > 2000)      errore += F("<p class=\"err\">Giri al giorno: da 100 a 2000.</p>");
+  if (verso < 0 || verso > 2)       errore += F("<p class=\"err\">Verso di rotazione non valido.</p>");
+  if (passo < 1000 || passo > 10000) errore += F("<p class=\"err\">Microsecondi: da 1000 a 10000.</p>");
+  for (uint8_t i = 0; i < 4; i++)
+    if (ore[i] < 0 || ore[i] > 23) { errore += F("<p class=\"err\">Orari: ore intere da 0 a 23.</p>"); break; }
+  if (ssid.length() > 32 || pw.length() > 63)
+    errore += F("<p class=\"err\">Nome della rete al massimo 32 caratteri, password al massimo 63.</p>");
+  if (!eepromPresente)
+    errore += F("<p class=\"err\">Memoria del modulo RTC non trovata: impossibile salvare.</p>");
+  if (errore.length()) { paginaMessaggio(errore, true); return; }
+
+  cfg.tpd         = tpd;
+  cfg.modoVerso   = verso;
+  cfg.passoUs     = passo;
+  cfg.oraInizio   = ore[0]; cfg.oraFine   = ore[1];
+  cfg.oraInizioWe = ore[2]; cfg.oraFineWe = ore[3];
+  bool ok = configSalva();
+  ricalcolaPiano();
+
+  bool reteCambiata = false;
+  if (ssid.length() == 0) {
+    if (wifiCfgValida) {
+      memset(&wifiCfg, 0, sizeof(wifiCfg));
+      wifiCfgValida = false;
+      ok = wifiSalva() && ok;
+      Serial.println(F("[CONFIG] Rete wifi cancellata."));
+    }
+  } else if (!(wifiCfgValida && ssid == wifiCfg.ssid && pw.length() == 0)) {
+    memset(&wifiCfg, 0, sizeof(wifiCfg));
+    wifiCfg.magic = WIFI_MAGIC;
+    strncpy(wifiCfg.ssid, ssid.c_str(), sizeof(wifiCfg.ssid) - 1);
+    strncpy(wifiCfg.password, pw.c_str(), sizeof(wifiCfg.password) - 1);
+    wifiCfgValida = wifiSalva();
+    ok = wifiCfgValida && ok;
+    reteCambiata = wifiCfgValida;
+    Serial.print(F("[CONFIG] Rete wifi salvata: ")); Serial.println(wifiCfg.ssid);
+  }
+  Serial.println(ok ? F("[CONFIG] Impostazioni salvate dal telefono.")
+                    : F("[CONFIG] Salvataggio dal telefono non riuscito."));
+
+  String m;
+  if (ok) {
+    m = F("<p><b>Impostazioni salvate.</b></p>");
+    if (reteCambiata) {
+      m += F("<p>All'uscita il caricatore si collega alla rete ");
+      m += testoHtml(wifiCfg.ssid);
+      m += F(" per prendere l'ora da internet.</p>");
+    }
+    m += F("<p>Fra pochi secondi la rete " RETE_CONFIG " si spegne e il caricatore torna al "
+           "funzionamento normale. Il telefono si ricollega da solo alla sua rete.</p>");
+    syncDopoConfig = reteCambiata;
+    uscitaProgrammata = true;
+    uscitaMs = millis() + 3000UL;
+  } else {
+    m = F("<p class=\"err\">Salvataggio non riuscito: riprovare.</p>");
+  }
+  paginaMessaggio(m, !ok);
+}
+
+void oraDaTelefono() {
+  configAttivitaMs = millis();
+  DataOra t;
+  bool ok = dataOraDaTesto(server.arg("t").c_str(), t) && rtcPresente && scriviOra(t);
+  if (ok) {
+    oraCacheValida = leggiOra(oraCache);
+    ultimaLetturaRtcMs = millis();
+    ricalcolaPiano();
+    Serial.print(F("[CONFIG] Ora presa dal telefono: ")); stampaOra(t); Serial.println();
+    paginaMessaggio(String(F("<p><b>Ora impostata:</b> ")) + testoOra(t) + F("</p>"), true);
+  } else {
+    paginaMessaggio(F("<p class=\"err\">Impostazione dell'ora non riuscita.</p>"), true);
+  }
+}
+
+void esciDaTelefono() {
+  paginaMessaggio(F("<p>Uscita senza salvare. Fra pochi secondi la rete " RETE_CONFIG
+                    " si spegne e il caricatore torna al funzionamento normale.</p>"), false);
+  uscitaProgrammata = true;
+  uscitaMs = millis() + 2000UL;
+}
+
+// Ogni altro indirizzo (comprese le pagine di prova di iPhone e Android)
+// rimanda alla pagina principale: e' cosi' che il telefono la apre da solo.
+void reindirizza() {
+  server.sendHeader("Location", "http://192.168.4.1/", true);
+  server.send(302, "text/plain", "");
+}
+
+void avviaConfigurazione() {
+  if (modoConfig) return;
+  fermaMotore();
+  Serial.println(F("[CONFIG] Avvio della configurazione da telefono..."));
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_AP_STA);
+
+  // Elenco delle reti vicine, proposto nel campo del nome della rete.
+  numRetiVicine = 0;
+  int n = WiFi.scanNetworks();
+  for (int i = 0; i < n && numRetiVicine < MAX_RETI_VICINE; i++) {
+    String s = WiFi.SSID(i);
+    if (s.length() == 0) continue;
+    bool doppia = false;
+    for (uint8_t j = 0; j < numRetiVicine; j++) if (retiVicine[j] == s) doppia = true;
+    if (!doppia) retiVicine[numRetiVicine++] = s;
+  }
+  WiFi.scanDelete();
+
+  WiFi.softAPConfig(IP_CONFIG, IP_CONFIG, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(RETE_CONFIG);
+  dns.setErrorReplyCode(DNSReplyCode::NoError);
+  dns.start(53, "*", IP_CONFIG);
+  server.begin();
+
+  modoConfig        = true;
+  uscitaProgrammata = false;
+  syncDopoConfig    = false;
+  configAttivitaMs  = millis();
+  Serial.print(F("[CONFIG] Rete \"" RETE_CONFIG "\" attiva, pagina http://192.168.4.1 ("));
+  Serial.print(numRetiVicine);
+  Serial.println(F(" reti vicine). Si chiude dopo il salvataggio, dopo 10 minuti o con 'k'."));
+}
+
+void terminaConfigurazione() {
+  if (!modoConfig) return;
+  server.stop();
+  dns.stop();
+  WiFi.softAPdisconnect(true);
+  spegniWifi();
+  modoConfig = false;
+  uscitaProgrammata = false;
+  statoLed = -1;                             // il loop riscrive il LED
+  Serial.println(F("[CONFIG] Configurazione chiusa, funzionamento normale."));
+  if (syncDopoConfig && wifiCfgValida) prossimaSyncMs = millis();
+  syncDopoConfig = false;
+  riavviaCiclo();
+}
+
+void gestisciConfigurazione() {
+  dns.processNextRequest();
+  server.handleClient();
+  if (millis() - ultimoLampeggioMs >= 300UL) {
+    ultimoLampeggioMs = millis();
+    statoLed = !statoLed;
+    impostaLed(statoLed);
+  }
+  if (uscitaProgrammata) {
+    if ((long)(millis() - uscitaMs) >= 0) terminaConfigurazione();
+  } else if (millis() - configAttivitaMs >= CONFIG_DURATA_MIN * 60000UL) {
+    Serial.println(F("[CONFIG] Nessuna attivita' per 10 minuti."));
+    terminaConfigurazione();
+  }
+}
+
+// Doppio RST: al primo riavvio da pulsante si scrive un segnale nella memoria
+// RTC dell'ESP8266 (resiste al RST, non allo spegnimento); se entro
+// DOPPIO_RST_MS arriva un secondo RST, all'avvio il segnale c'e' ancora e si
+// apre la configurazione da telefono. Chiamata all'inizio di setup().
+bool rilevaDoppioRst() {
+  uint32_t segnale = 0;
+  ESP.rtcUserMemoryRead(DOPPIO_RST_BLOCCO, &segnale, sizeof(segnale));
+  rst_info *motivo = ESP.getResetInfoPtr();
+  bool daPulsante = motivo && motivo->reason == REASON_EXT_SYS_RST;
+  if (daPulsante && segnale == DOPPIO_RST_MAGIC) {
+    segnale = 0;
+    ESP.rtcUserMemoryWrite(DOPPIO_RST_BLOCCO, &segnale, sizeof(segnale));
+    return true;
+  }
+  segnale = DOPPIO_RST_MAGIC;
+  ESP.rtcUserMemoryWrite(DOPPIO_RST_BLOCCO, &segnale, sizeof(segnale));
+  doppioRstInAttesa = true;
+  return false;
+}
+
+// Passata la finestra, il segnale si cancella: un RST isolato riavvia e basta.
+void chiudiFinestraDoppioRst() {
+  if (!doppioRstInAttesa || millis() < DOPPIO_RST_MS) return;
+  uint32_t segnale = 0;
+  ESP.rtcUserMemoryWrite(DOPPIO_RST_BLOCCO, &segnale, sizeof(segnale));
+  doppioRstInAttesa = false;
+}
+
+// FLASH tenuto premuto PRESSIONE_CONFIG_MS apre la configurazione o, se e'
+// gia' aperta, la chiude. Prima di un nuovo comando va rilasciato.
+void controllaPulsante() {
+  bool premuto = digitalRead(PIN_FLASH) == LOW;
+  if (!premuto) { flashInizioMs = 0; flashAttesaRilascio = false; return; }
+  if (flashAttesaRilascio) return;
+  if (flashInizioMs == 0) {
+    flashInizioMs = millis() | 1UL;
+    Serial.println(F("[FLASH] Pulsante premuto: tenerlo per 3 s."));
+    return;
+  }
+  if (millis() - flashInizioMs >= PRESSIONE_CONFIG_MS) {
+    flashAttesaRilascio = true;
+    if (modoConfig) terminaConfigurazione();
+    else            avviaConfigurazione();
+  }
+}
+
+// ============================================================================
 //  COMANDI DA MONITOR SERIALE
 // ============================================================================
 
 void avviaTest(uint8_t giri, bool soloOrario) {
+  if (modoConfig) { Serial.println(F("Prima chiudere la configurazione da telefono ('k').")); return; }
   fermaMotore();
   long passi = giri * passiPerGiroOrologio();
   winder.passiFaseCw  = passi;
@@ -986,20 +1413,10 @@ void eseguiComando(String cmd) {
         t.ora    = atoi(mt);
         t.minuto = atoi(mt + 3);
         t.secondo= atoi(mt + 6);
-      } else {
+      } else if (!dataOraDaTesto(resto.c_str(), t)) {
         // formato atteso: T aaaa-mm-gg hh:mm:ss
-        int a, me, g, h, mi, se;
-        int n = sscanf(resto.c_str(), "%d-%d-%d %d:%d:%d", &a, &me, &g, &h, &mi, &se);
-        if (n != 6) {
-          Serial.println(F("Formato non valido. Esempio: T 2026-11-06 14:35:00"));
-          break;
-        }
-        if (a < 2000 || a > 2099 || me < 1 || me > 12 || g < 1 || g > 31 ||
-            h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 59) {
-          Serial.println(F("Valori di data/ora fuori intervallo."));
-          break;
-        }
-        t.anno = a; t.mese = me; t.giorno = g; t.ora = h; t.minuto = mi; t.secondo = se;
+        Serial.println(F("Data/ora non valida. Esempio: T 2026-11-06 14:35:00"));
+        break;
       }
       if (scriviOra(t)) { Serial.print(F("RTC impostato a: ")); stampaOra(t); Serial.println(); }
       else                Serial.println(F("Scrittura RTC fallita."));
@@ -1134,9 +1551,15 @@ void eseguiComando(String cmd) {
         Serial.print(F("Rete wifi salvata in EEPROM: ")); Serial.println(wifiCfg.ssid);
       }
       if (!wifiCfgValida) { Serial.println(F("Rete wifi non impostata. Uso: n <rete> <password>")); break; }
+      if (modoConfig) { Serial.println(F("Sincronizzazione all'uscita dalla configurazione da telefono.")); syncDopoConfig = true; break; }
       sincronizzaOra();
       break;
     }
+
+    case 'k':
+      if (modoConfig) terminaConfigurazione();
+      else            avviaConfigurazione();
+      break;
 
     case 'w':
       if (!eepromPresente) { Serial.println(F("EEPROM non rilevata: impossibile salvare.")); break; }
@@ -1188,12 +1611,25 @@ void setup() {
   winder.partenzaArmata = true;
   winder.test           = false;
 
+  // Subito, perche' il secondo RST puo' arrivare dopo meno di un secondo.
+  bool configAllAvvio = rilevaDoppioRst();
+
   pinMode(LED_BUILTIN, OUTPUT);
   impostaLed(false);
+  pinMode(PIN_FLASH, INPUT_PULLUP);
 
-  // Radio spenta: si accende solo per sincronizzare l'ora.
+  // Radio spenta: si accende solo per sincronizzare l'ora o per la
+  // configurazione da telefono.
   WiFi.persistent(false);
   WiFi.mode(WIFI_OFF);
+
+  // Pagine della configurazione da telefono (il server parte solo con il
+  // doppio RST, con il pulsante FLASH o con 'k').
+  server.on("/", HTTP_GET, paginaPrincipale);
+  server.on("/salva", HTTP_POST, salvaDaTelefono);
+  server.on("/ora", HTTP_POST, oraDaTelefono);
+  server.on("/esci", HTTP_POST, esciDaTelefono);
+  server.onNotFound(reindirizza);
 
   Serial.begin(115200);
   delay(300);
@@ -1250,6 +1686,11 @@ void setup() {
 
   stampaStato();
   stampaAiuto();
+
+  if (configAllAvvio) {
+    Serial.println(F("[CONFIG] Doppio RST: apertura della configurazione da telefono."));
+    avviaConfigurazione();
+  }
 }
 
 // ============================================================================
@@ -1258,6 +1699,14 @@ void setup() {
 
 void loop() {
   leggiSeriale();
+  controllaPulsante();
+  chiudiFinestraDoppioRst();
+
+  // Configurazione da telefono: motore fermo, si servono solo le pagine.
+  if (modoConfig) {
+    gestisciConfigurazione();
+    return;
+  }
 
   // Se il motore sta girando per un test, lo lasciamo lavorare senza
   // interferenze dalla logica dei cicli.

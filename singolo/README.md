@@ -56,7 +56,8 @@ Schema completo: [schema-elettrico-1-posto.svg](schema-elettrico-1-posto.svg).
   5 V e almeno 1 A. Non collegare mai un secondo alimentatore su VU con il
   cavo USB inserito.
 - **LED di stato**: quello già montato sulla NodeMCU (D4), acceso quando il
-  caricatore è nella fascia oraria di lavoro.
+  caricatore è nella fascia oraria di lavoro, lampeggiante durante la
+  configurazione dal telefono.
 
 D8 deve essere a livello basso all'accensione, altrimenti la scheda non
 parte: lo tengono basso la resistenza della NodeMCU e l'ingresso
@@ -124,7 +125,44 @@ comandi; `w` salva nella memoria EEPROM del modulo RTC):
   più silenzioso fra quelli provati (da 1200 a 4000). Sotto 1200 il motore
   rischia di perdere passi;
 - `m` un giro per verso, `d` tre giri in senso orario, `s` stato,
-  `t` ora e temperatura dell'RTC.
+  `t` ora e temperatura dell'RTC, `k` apre o chiude la configurazione dal
+  telefono.
+
+### Configurazione dal telefono
+
+Senza cavo e senza computer, per esempio per impostare la rete wifi di chi
+riceve il caricatore:
+
+1. con il caricatore acceso, premere **RST due volte a circa un secondo di
+   distanza** (dal foro nel piano superiore, con uno stuzzicadenti). Il
+   motore si ferma e il LED lampeggia;
+2. sul telefono scegliere la rete wifi **Watchwinder** (aperta, senza
+   password). La pagina del caricatore si apre da sola, come nelle reti
+   degli alberghi; se non si apre, andare con il browser su `192.168.4.1`;
+3. nella pagina si vedono ora e stato, e si possono impostare la rete wifi
+   (con l'elenco delle reti vicine), i giri al giorno, il verso, le fasce
+   orarie e la velocità. Il pulsante "Prendi l'ora dal telefono" serve se
+   non c'è rete wifi;
+4. con "Salva" o "Esci senza salvare" la rete Watchwinder si spegne e il
+   caricatore torna al funzionamento normale. Si spegne da sola anche dopo
+   10 minuti senza attività.
+
+La pagina non mostra mai la password salvata. Un RST singolo riavvia e
+basta. Il segnale fra i due RST sta nella memoria interna dell'ESP8266, che
+resiste al riavvio da pulsante ma non allo spegnimento.
+
+Collegata a un computer, la scheda si riavvia anche quando si apre o si
+chiude il monitor seriale; due riavvii ravvicinati, per esempio subito dopo
+il caricamento del firmware, aprono la configurazione come un doppio RST.
+Non succede niente di male: si chiude con `k` o da sola dopo 10 minuti.
+Con un caricatore USB questo non accade.
+
+Dal telefono non si può usare il cavo USB: iOS non permette alle app di
+comunicare con chip USB-seriale come il CH340 della NodeMCU.
+
+Il firmware accetta anche il pulsante FLASH tenuto premuto per 3 secondi,
+ma sulla NodeMCU usata per questo caricatore quel pulsante non fa contatto
+(provato il 6 novembre 2026): per questo si usa il doppio RST.
 
 ## File
 
