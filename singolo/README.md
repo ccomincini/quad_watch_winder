@@ -172,6 +172,10 @@ I file 3D sono tutti in `single-watch-winder-model_files/`.
 |------|---------|-----------|
 | `watchwinder_single_body_nodemcu.stl` | modifica di Robbie Kieffer | Scatola da stampare, con gli attacchi per la NodeMCU |
 | `watchwinder_single_body_nodemcu.scad` | modifica di Robbie Kieffer | Sorgente OpenSCAD della scatola modificata |
+| `watchwinder_single_body_round.stl` | modifica di Robbie Kieffer | Scatola tonda da 136 mm, più piccola (vedi sotto) |
+| `watchwinder_single_body_round.scad` | modifica di Robbie Kieffer | Sorgente OpenSCAD della scatola tonda |
+| `watchwinder_single_base_round.stl` | modifica di Robbie Kieffer | Coperchio inferiore della scatola tonda, 4 viti |
+| `watchwinder_single_base_round.scad` | modifica di Robbie Kieffer | Sorgente OpenSCAD del coperchio tondo |
 | `watchwinder_single_body.stl` | Robbie Kieffer | Scatola originale, non in uso |
 | `watchwinder_single_base.stl` | Robbie Kieffer | Coperchio inferiore, fissato con 6 viti |
 | `watchwinder_singlering.stl` | Robbie Kieffer | Anello esterno per un solo orologio |
@@ -237,4 +241,37 @@ cartella `single-watch-winder-model_files/`:
 
 ```
 openscad --backend=manifold -o watchwinder_single_body_nodemcu.stl watchwinder_single_body_nodemcu.scad
+```
+
+## Scatola tonda
+
+Variante più piccola della scatola modificata: tonda, da 136 mm invece di
+180 x 120, con circa il 22% di superficie in meno. La profondità non può
+scendere molto sotto i 120 mm, perché la occupano i piedi dei supporti
+dell'anello; si guadagna in larghezza.
+
+Riprende dalla scatola di Robbie gli attacchi del motore (foro dell'albero
+e orecchie), la posizione dei supporti e l'altezza; il resto è disegnato da
+capo:
+
+- NodeMCU sul retro, perpendicolare alla parete, con il micro USB nella
+  parete come nella scatola modificata; i fori dei pulsanti RST e FLASH
+  sono sul piano superiore, dietro il piede del supporto alto;
+- scheda ULN2003 a sinistra del motore, modulo RTC a destra con i piedini
+  verso il retro;
+- coperchio inferiore nuovo, fissato con quattro viti M3x8 avvitate
+  direttamente nelle colonne della scatola (fori da 2,8 mm; Robbie usa fori
+  da 4,3 mm, adatti a inserti filettati).
+
+Il supporto alto va montato prima della NodeMCU: il suo dado resta sotto
+la scheda.
+
+Per rigenerare gli STL, dalla cartella `single-watch-winder-model_files/`:
+
+```
+openscad --backend=manifold -o watchwinder_single_body_round.stl watchwinder_single_body_round.scad
+```
+
+```
+openscad --backend=manifold -o watchwinder_single_base_round.stl watchwinder_single_base_round.scad
 ```
